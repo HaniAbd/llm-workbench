@@ -8,6 +8,8 @@ from fastapi.responses import StreamingResponse
 from openai import OpenAI
 from pydantic import BaseModel
 
+from tracing import chat_span
+
 load_dotenv(dotenv_path="../.env")
 
 client = OpenAI(
@@ -48,31 +50,40 @@ def chat(req: ChatRequest):
     messages += [m.model_dump() for m in req.messages]
 
     def generate():
-        stream = client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            temperature=0,
-            stream=True,
-            stream_options={"include_usage": True},
-        )
+        # The span opens before the request so latency covers the whole call,
+        # and closes after the last yield so the log line is written once the
+        # stream completes. Marking it costs nothing per token.
+        with chat_span(MODEL) as span:
+            stream = client.chat.completions.create(
+                model=MODEL,
+                messages=messages,
+                temperature=0,
+                stream=True,
+                stream_options={"include_usage": True},
+            )
 
-        for chunk in stream:
-            if chunk.choices:
-                choice = chunk.choices[0]
-                if choice.delta.content:
-                    yield sse("token", {"text": choice.delta.content})
-                if choice.finish_reason:
-                    yield sse("finish", {"reason": choice.finish_reason})
+            for chunk in stream:
+                if chunk.choices:
+                    choice = chunk.choices[0]
+                    if choice.delta.content:
+                        span.first_token()
+                        yield sse("token", {"text": choice.delta.content})
+                    if choice.finish_reason:
+                        span.finish_reason = choice.finish_reason
+                        yield sse("finish", {"reason": choice.finish_reason})
 
-            if chunk.usage:
-                yield sse(
-                    "usage",
-                    {
-                        "input_tokens": chunk.usage.prompt_tokens,
-                        "output_tokens": chunk.usage.completion_tokens,
-                    },
-                )
+                if chunk.usage:
+                    span.set_usage(
+                        chunk.usage.prompt_tokens, chunk.usage.completion_tokens
+                    )
+                    yield sse(
+                        "usage",
+                        {
+                            "input_tokens": chunk.usage.prompt_tokens,
+                            "output_tokens": chunk.usage.completion_tokens,
+                        },
+                    )
 
-        yield sse("done", {})
+            yield sse("done", {})
 
     return StreamingResponse(generate(), media_type="text/event-stream")

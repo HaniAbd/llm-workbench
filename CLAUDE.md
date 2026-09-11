@@ -50,7 +50,7 @@ node 01-first-call.js      # any single file; they are not wired to npm scripts
 
 ### api/
 
-`api/main.py` is the whole service. It hand-rolls SSE (`sse()` helper) rather than using a library, emitting four event types that the web client must handle:
+`api/main.py` is the request handler; `api/tracing.py` is the observability seam. `main.py` hand-rolls SSE (`sse()` helper) rather than using a library, emitting four event types that the web client must handle:
 
 - `token` → `{text}` — one content delta
 - `finish` → `{reason}` — the provider's finish_reason (`length` means truncated; don't parse that output)
@@ -58,6 +58,21 @@ node 01-first-call.js      # any single file; they are not wired to npm scripts
 - `done` → `{}` — terminator
 
 CORS is locked to `http://localhost:3000`, i.e. the Next dev server. The system prompt and `temperature=0` are hardcoded server-side.
+
+#### Tracing seam
+
+[api/tracing.py](api/tracing.py) emits **one JSON line per LLM call** on the `llm.trace` logger — model, token counts, `ttft_ms`, `latency_ms`, finish reason:
+
+```json
+{"event": "llm_call", "model": "llama3.2", "input_tokens": 38, "output_tokens": 70, "ttft_ms": 100, "latency_ms": 2026, "finish_reason": "stop", "error": null}
+```
+
+`chat_span(model)` is a context manager yielding a mutable span; the handler marks `first_token()`, `set_usage()` and `finish_reason` as events arrive, and the line is written from a `finally` on close. It is shaped like an OTel span / Langfuse generation on purpose — **replacing it with a real tracing library means rewriting `chat_span` and `_emit`, not touching the handler.** `tracing.py` deliberately knows nothing about OpenAI or FastAPI.
+
+Two non-obvious properties:
+
+- It attaches its **own stdout handler** rather than inheriting one. uvicorn leaves the root logger bare, so a plain `getLogger(...).info(...)` is dropped silently; owning the handler is also what keeps each record a single `jq`-parseable line instead of one prefixed with `INFO:`.
+- **Aborted calls are not logged.** Starlette iterates the sync generator in a threadpool and abandons it on client disconnect rather than closing it, so `finally` never runs. Completed and failed calls (the latter with `error` set) are logged; aborted ones are not.
 
 ```bash
 cd api
