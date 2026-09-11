@@ -1,5 +1,6 @@
 import json
 import os
+from typing import Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -29,7 +30,10 @@ app.add_middleware(
 
 
 class Message(BaseModel):
-    role: str
+    # "system" is the server's to set. Constraining the role here means a
+    # request carrying one is rejected by validation with a 422 before the
+    # handler runs, rather than being silently dropped from the history.
+    role: Literal["user", "assistant"]
     content: str
 
 

@@ -57,7 +57,7 @@ node 01-first-call.js      # any single file; they are not wired to npm scripts
 - `usage` → `{input_tokens, output_tokens}` — arrives at the end, requires `stream_options={"include_usage": True}`
 - `done` → `{}` — terminator
 
-CORS is locked to `http://localhost:3000`, i.e. the Next dev server. The system prompt and `temperature=0` are hardcoded server-side.
+CORS is locked to `http://localhost:3000`, i.e. the Next dev server. The system prompt and `temperature=0` are hardcoded server-side, and `Message.role` is `Literal["user", "assistant"]` so a client cannot supply a `system` turn of its own — such a request is **rejected with a 422** by validation, before the handler runs, rather than being stripped. Rejected requests never open a span, so they leave no `llm_call` line.
 
 #### Tracing seam
 
