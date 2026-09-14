@@ -379,6 +379,47 @@ A failed call still carries a trace. A `502` body is `{"message": ..., "trace": 
 **This is a development aid.** It travels inline with the response, so a caller only ever sees its own call — there is no trace store to query and no id to guess. The cost of that choice is that every response carries the full rendered prompt, which is fine for a local workbench and is the first thing to reconsider if this is ever exposed beyond localhost.
 
 
+## CI
+
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on every push and pull request, in two jobs: `api` (pytest) and `web` (typecheck, lint, build).
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest          # 167 checks, under a second, no model needed
+```
+
+Everything CI runs is **model-free**. The checks were chosen for one property: they fail silently today, surfacing only when a request is served or, worse, as a score that looks like a model problem.
+
+| Check | The silent failure it catches |
+| --- | --- |
+| `test_prompts` | A `$placeholder` added to a `.md` that the caller does not pass, a variable removed from the call, or a deleted placeholder line leaving a prompt that never states the legal values |
+| `test_schema` | A `Literal` swapped for an `Enum`, which emits `$defs`/`$ref` that Ollama cannot resolve; `additionalProperties` loosened; response-only fields leaking into what the model is asked to generate |
+| `test_scoring` | An enum changed without the scorer's ordinal scale, so graded credit silently means something new; credit that rises with distance |
+| `test_dataset` | A typo'd expectation (`"biling"`), a bare value where a list belongs, an acceptance for a field the case does not score. None of these fail loudly — they score zero forever and read as a model failure |
+| `test_runner` | The eval runner can still parse every case, scored against synthetic responses. This is the model-free half of "can the suite still run" |
+| `test_app` | Routes present, OpenAPI builds, and the validation-only 422s (blank text, empty conversation, client-supplied `system` role) which happen before any provider call |
+| `test_tracing` | A renamed trace key, which breaks the `web/` panel with nothing to type-check the two against; and the log line staying scalar |
+
+CI has no `.env`, and `main.py` reads `OPENAI_*` at import. `tests/conftest.py` supplies deliberately fake values — nothing opens a connection and no secret is involved.
+
+### What CI cannot cover
+
+**The eval suite is a local step, on purpose.** `evals/run.py` classifies 34 tickets through llama3.2 running on your machine; a GitHub runner has no model and no way to reach yours. Nothing in CI produces a score.
+
+So CI answers *"is it wired up correctly"*, never *"is it any good"*. A prompt change that halves classification accuracy passes CI cleanly. Run the eval before trusting a prompt change:
+
+```bash
+python evals/run.py
+```
+
+For the eval to move into CI, one of these would have to change:
+
+- **A model in the runner.** `ollama serve` plus `ollama pull llama3.2` on `ubuntu-latest` — a ~2GB pull and CPU-only inference, against a suite that takes ~55s on a warm local GPU. Cache the model between runs or this dominates the build.
+- **A self-hosted runner** on the machine that already has Ollama. Removes the pull entirely and is the cheapest path, at the cost of running CI on your own hardware.
+- **A hosted provider.** Fastest and most reproducible, but needs an API key in repository secrets and costs money per run — both out of scope here, and it would also change what is being measured, since the scores in `runs.jsonl` are all from llama3.2.
+
+Whichever, scores from CI and scores from your machine are only comparable if the model and its settings match. `runs.jsonl` records `model` and `prompt_id` precisely so that mismatch is visible rather than assumed.
+
 ## Known limitations
 
 - **Aborted calls leave no log line, and do not stop the model.** Starlette iterates the handler's sync generator in a threadpool and abandons it when a client disconnects instead of closing it, so the `finally` in `chat_span` never runs. Nothing closes the upstream request either, so the generation keeps running on Ollama and keeps occupying its inference slot. One abandoned long generation can make the model appear to hang for every other caller.

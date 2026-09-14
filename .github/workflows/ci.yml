@@ -1,0 +1,68 @@
+name: CI
+
+# Everything here must pass without a model. The eval suite needs llama3.2
+# running locally and stays a local step - see "What CI cannot cover" in
+# api/README.md for what would have to change for it to move here.
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    name: api (model-free checks)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            api/requirements.txt
+            api/requirements-dev.txt
+
+      - name: Install
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      # No .env exists here. main.py reads OPENAI_* at import time, so the test
+      # suite supplies fake values in conftest.py - nothing opens a connection
+      # and no secret is involved.
+      - name: Checks
+        run: python -m pytest
+
+  web:
+    name: web
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      # NEXT_PUBLIC_API_URL is unset here; the code falls back to
+      # http://localhost:8000, so the build needs no configuration.
+      - name: Build
+        run: npm run build

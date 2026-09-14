@@ -1,0 +1,6 @@
+# Development-only dependencies. Not needed to run the service.
+#     pip install -r requirements.txt -r requirements-dev.txt
+iniconfig==2.3.0
+packaging==26.3
+pluggy==1.6.0
+pytest==9.1.1
