@@ -65,7 +65,17 @@ CORS accepts **any localhost port** via `allow_origin_regex`, not a fixed origin
 
 One pydantic model (`Classification`) is both the schema sent to the provider and the validator for the reply, so they cannot drift. Replies are re-validated on arrival and rejected rather than repaired.
 
-Blank input is a 422 before any model call; junk gets a 200 with `is_support_ticket: false` and its other fields normalised to constants — **check the flag, not the category**, since a genuine ticket can also be `category: "other"`. `samples/run.py` exercises 18 hand-checkable tickets.
+Blank input is a 422 before any model call; junk gets a 200 with `is_support_ticket: false` and its other fields normalised to constants — **check the flag, not the category**, since a genuine ticket can also be `category: "other"`.
+
+#### Evaluation
+
+`api/evals/` scores the classifier rather than pass/failing it — `python evals/run.py` (34 cases, ~55s) prints one score plus a per-field and per-group breakdown, and appends to `evals/runs.jsonl`.
+
+Two kinds of field, deliberately: `category` and the booleans are **exact** (nominal — a distance between "billing" and "technical" would be invented), while `urgency` and `sentiment` are **ordinal** and give 0.5 for one step outside the accepted set. Expectations are always a *set* of acceptable values, never one right answer; a field omitted from a case is not scored.
+
+Comparability is enforced by digests: `scorer_digest` hashes the scoring rules, so changing how a score is computed **refuses** comparison with older runs rather than silently redefining the number. A changed `dataset_digest` still compares, on the shared cases. A changed `prompt_id` compares and is labelled `ACROSS PROMPTS` — that is the comparison the suite exists for.
+
+Failures split into **accepted** (blessed in `cases.json`), **regressions** (worse than baseline — exits non-zero), **outstanding** (known bad, no worse) and **fixed**, so a new break is never buried under a familiar one.
 
 #### Development traces
 

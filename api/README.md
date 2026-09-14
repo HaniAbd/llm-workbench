@@ -186,18 +186,59 @@ When the flag is `false` the other four fields are fixed constants (`other` / `l
 
 Ticket text is treated as data, never instructions. The system prompt says so explicitly, and the grammar is the backstop — injected text cannot emit a value outside the enums or a field outside the schema no matter what it says. Verified against instruction-override, a competing schema, a forged `SYSTEM:` turn, and an injection buried inside a real ticket: every one returned a valid in-enum object.
 
-The grammar constrains *shape*, not *judgement* — injected text can still nudge which valid value is chosen. See the known miss in `samples/tickets.json`.
+The grammar constrains *shape*, not *judgement* — injected text can still nudge which valid value is chosen. See `injection_enum_smuggling` in `evals/cases.json` — injected values that are all valid enum members, where only the prompt can help.
 
-### Sample tickets
+### Evaluation
 
-18 samples covering normal tickets, awkward ones (angry-but-trivial, polite-but-critical, multi-issue, non-English), junk, injections, and the two rejected inputs:
+`evals/` answers "is the classifier better or worse than last time", not "does it pass". A run produces **one score** plus a breakdown, and appends itself to `evals/runs.jsonl` so comparing with last time needs no bookkeeping.
 
 ```bash
-python samples/run.py                    # against localhost:8000
-python samples/run.py http://localhost:8001
+python evals/run.py                    # 34 cases, ~55s
+python evals/run.py --group arguable   # one group, for a fast loop (not saved)
+python evals/run.py --history          # past runs, makes no calls
 ```
 
-The runner asserts only the hard contract — status code, ticket/non-ticket verdict, and that every value is in its enum. The classifications themselves are judgement calls and are printed for reading, not asserted. Current: **17/18**, with one known miss documented in the sample's own note.
+```
+score  0.868   (34 cases, 56.2s)
+prompt classify_ticket@70645fce0f63
+scorer bd823d387c54   dataset ad2f319af1f5
+
+by field                      by group
+  status            1.000       clean       0.958
+  is_support_ticket 0.875       arguable    0.845
+  category          0.571       junk        0.900
+  requires_human    0.769       injection   0.728
+  urgency           0.913       rejected    1.000
+  sentiment         0.955
+```
+
+#### Two kinds of field
+
+`expect` in `cases.json` lists the values that would be **accepted**, never one correct answer. Fields are scored two ways, because they are not the same kind of question:
+
+| Kind | Fields | Credit |
+| --- | --- | --- |
+| **exact** | `status`, `is_support_ticket`, `category`, `requires_human` | 1 or 0. `category` is nominal — "billing" is no nearer to "technical" than to "feedback" — so a distance would be invented, not measured. Arguable cases list every acceptable value instead. |
+| **ordinal** | `urgency` (low→medium→high), `sentiment` (positive→neutral→frustrated→angry) | 1 in the set, **0.5 one step out**, 0 beyond. "Nearly right" and "opposite end" are different answers, and collapsing them loses the signal a prompt edit is most likely to move. |
+
+A field omitted from a case's `expect` is not scored — used where there is genuinely no view worth asserting, such as the category of `"it doesn't work"`.
+
+#### What makes two runs comparable
+
+| Recorded | If it differs |
+| --- | --- |
+| `scorer_digest` | **Comparison refused.** The digest is a hash of the scoring rules, so changing any credit value or scale invalidates old scores automatically — no version number anyone has to remember to bump. |
+| `dataset_digest` | Comparison still offered, computed over the cases both runs share, and the report says how many that was. Adding cases does not throw away history. |
+| `prompt_id` | Comparison offered and labelled `ACROSS PROMPTS` with both ids. This is the comparison you want, so it is flagged rather than refused. |
+
+#### Known failures are not regressions
+
+Failures are sorted into buckets that mean different things, so a new break cannot be buried under a familiar one:
+
+- **accepted** — listed in `accepted_failures` in `cases.json`, with the prompt they were accepted under. Never an alarm.
+- **regressions** — passing in the baseline and failing now, or failing by more. This bucket should be empty; the runner exits non-zero when it is not.
+- **outstanding** — failing, not accepted, and no worse than the baseline. Visible, but kept apart.
+- **fixed** — an accepted failure that now passes, so the acceptance can be removed.
 
 
 ## Prompts
