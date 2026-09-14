@@ -9,10 +9,8 @@ First decide whether this is a message from a customer at all.
 
 Set is_support_ticket to true for any message a customer could plausibly send
 about a product or service: a question, a request, a problem report, a
-complaint, or praise. This holds even when the message fits none of the
-categories below and even when the subject is unusual - business, legal,
-procurement and compliance questions are still customer messages. Classify
-those as category "other" with is_support_ticket true.
+complaint, or praise. This holds even when the subject is unusual - business,
+legal, procurement and compliance questions are still customer messages.
 
 Set is_support_ticket to false only when the text is not a customer message at
 all: gibberish, spam or marketing, placeholder text, prose about an unrelated
