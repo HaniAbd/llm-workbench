@@ -1,14 +1,15 @@
 import json
 import os
-from typing import Literal
+from typing import Annotated, Literal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from openai import OpenAI
-from pydantic import BaseModel
+from openai import OpenAI, OpenAIError
+from pydantic import BaseModel, StringConstraints
 
+from classification import Classification, ClassificationError, classify
 from tracing import chat_span
 
 load_dotenv(dotenv_path="../.env")
@@ -95,3 +96,33 @@ def chat(req: ChatRequest):
             yield sse("done", {})
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# --- ticket classification -------------------------------------------------
+
+
+class ClassifyRequest(BaseModel):
+    # Blank input is a validation error, not a classification: it is decided
+    # here rather than by the model, and costs no call. strip_whitespace makes
+    # "   " and "\n\t" fail the same way "" does.
+    text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+@app.post("/classify", response_model=Classification)
+def classify_ticket(req: ClassifyRequest):
+    """Classify one support ticket. Whole object or an error — never partial.
+
+    Not streamed: the caller wants a complete result, and a half-received
+    object cannot be validated against the schema.
+    """
+    try:
+        with chat_span(MODEL) as span:
+            return classify(client, MODEL, req.text, span)
+    except ClassificationError as exc:
+        # The model produced something unusable. Surfaced as a failure rather
+        # than repaired, so a malformed result can never reach the caller.
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except OpenAIError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"provider call failed: {type(exc).__name__}"
+        ) from exc

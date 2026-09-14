@@ -34,7 +34,7 @@ There is no real API key anywhere — swapping to a hosted provider is a matter 
 | Dir | Stack | Role |
 | --- | --- | --- |
 | [scripts/](scripts/) | Node ESM, Vercel AI SDK (`ai` + `@ai-sdk/openai`) | Numbered standalone experiments, run directly with `node` |
-| [api/](api/) | FastAPI + `openai` Python SDK | `POST /chat`, streams SSE |
+| [api/](api/) | FastAPI + `openai` Python SDK | `POST /chat` streams SSE; `POST /classify` returns a schema-constrained object |
 | [web/](web/) | Next.js 16, React 19, Tailwind v4 | Chat UI — streams from the API and renders the transcript |
 
 They are independent: no shared package, no build step linking them. The only contracts between them are the root `.env` and the SSE protocol below.
@@ -50,7 +50,7 @@ node 01-first-call.js      # any single file; they are not wired to npm scripts
 
 ### api/
 
-`api/main.py` is the request handler; `api/tracing.py` is the observability seam. `main.py` hand-rolls SSE (`sse()` helper) rather than using a library, emitting four event types that the web client must handle:
+`api/main.py` holds the routes; `api/classification.py` is the `/classify` task (schema, prompt, provider call); `api/tracing.py` is the observability seam. See [api/README.md](api/README.md) for the full service docs. `main.py` hand-rolls SSE (`sse()` helper) rather than using a library, emitting four event types that the web client must handle:
 
 - `token` → `{text}` — one content delta
 - `finish` → `{reason}` — the provider's finish_reason (`length` means truncated; don't parse that output)
@@ -58,6 +58,14 @@ node 01-first-call.js      # any single file; they are not wired to npm scripts
 - `done` → `{}` — terminator
 
 CORS accepts **any localhost port** via `allow_origin_regex`, not a fixed origin — the Next dev server falls back to 3001, 3002, … whenever its usual port is taken by another project, and a hardcoded origin breaks the page with an opaque "Failed to fetch" when it does. The system prompt and `temperature=0` are hardcoded server-side, and `Message.role` is `Literal["user", "assistant"]` so a client cannot supply a `system` turn of its own — such a request is **rejected with a 422** by validation, before the handler runs, rather than being stripped. Rejected requests never open a span, so they leave no `llm_call` line.
+
+#### Structured output
+
+`POST /classify` is the non-streaming counterpart to `/chat`. The finding that shapes it: **Ollama supports schema-constrained decoding through the OpenAI-compatible endpoint** (`response_format={"type": "json_schema", ...}`), so no provider-specific code path is needed. It is a decoding grammar — out-of-enum values are unproducible, which holds even under prompt injection. Plain `json_object` mode is *not* sufficient: it returned an invented `"Billing Issue"` category for the same ticket.
+
+One pydantic model (`Classification`) is both the schema sent to the provider and the validator for the reply, so they cannot drift. Replies are re-validated on arrival and rejected rather than repaired.
+
+Blank input is a 422 before any model call; junk gets a 200 with `is_support_ticket: false` and its other fields normalised to constants — **check the flag, not the category**, since a genuine ticket can also be `category: "other"`. `samples/run.py` exercises 18 hand-checkable tickets.
 
 #### Tracing seam
 

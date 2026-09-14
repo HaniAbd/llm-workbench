@@ -1,6 +1,6 @@
 # api
 
-A FastAPI service that fronts a local Ollama model and streams chat completions to the browser over Server-Sent Events. One endpoint, `POST /chat`. Every call leaves one structured log line.
+A FastAPI service that fronts a local Ollama model. Two endpoints: `POST /chat` streams prose over Server-Sent Events, and `POST /classify` returns a validated object for one task. Every call leaves one structured log line.
 
 It exists so the browser never talks to the model directly: the system prompt, sampling settings and the conversation's shape stay on the server, where a client cannot change them.
 
@@ -8,7 +8,8 @@ Two files:
 
 | File | Responsibility |
 | --- | --- |
-| `main.py` | HTTP layer — request schema, CORS, the SSE encoding, the call to the provider |
+| `main.py` | HTTP layer — routes, request schemas, CORS, the SSE encoding |
+| `classification.py` | The `/classify` task: output schema, prompt, and the provider call |
 | `tracing.py` | Observability seam. Knows nothing about OpenAI or FastAPI |
 
 ## Prerequisites
@@ -77,7 +78,7 @@ data: {}
 
 `-N` matters: without it curl buffers, and a streaming endpoint looks identical to a slow one.
 
-## The endpoint
+## `POST /chat` — streaming prose
 
 ### Request
 
@@ -114,6 +115,70 @@ Rejection happens in validation, before the handler runs, so such a request neve
 Frames are separated by a blank line and a single frame can be split across two reads, so a client must buffer and only parse what is terminated by `\n\n`.
 
 CORS is matched by regex against `http://(localhost|127.0.0.1):<port>`, so **any localhost port is accepted**. The Next dev server picks the next free port when its usual one is taken by another project, and pinning a single origin makes the page fail with a bare "Failed to fetch" the first time that happens. Starlette fullmatches the pattern, so lookalikes such as `http://localhost.evil.com` are still rejected.
+
+## `POST /classify` — ticket classification
+
+Classifies one support ticket. **Not streamed**: the caller wants the whole object or nothing, and a half-received object cannot be validated.
+
+```bash
+curl -s http://localhost:8000/classify -H 'content-type: application/json' \
+  -d '{"text":"I was charged twice this month. Please refund the duplicate."}'
+```
+
+```json
+{"is_support_ticket": true, "category": "billing", "urgency": "high", "sentiment": "frustrated", "requires_human": true}
+```
+
+| Field | Values |
+| --- | --- |
+| `is_support_ticket` | `true` / `false` — see below |
+| `category` | `billing` `technical` `account` `feedback` `other` |
+| `urgency` | `low` `medium` `high` |
+| `sentiment` | `positive` `neutral` `frustrated` `angry` |
+| `requires_human` | `true` / `false` |
+
+### How the shape is guaranteed
+
+`llama3.2` will not reliably produce valid JSON from prompting. **Ollama supports schema-constrained decoding through the OpenAI-compatible endpoint** — `response_format={"type": "json_schema", ...}` — so this uses the stock `openai` SDK with no provider-specific path. It is a decoding grammar, not a request: tokens outside the schema cannot be generated.
+
+The difference is not subtle. Same ticket, same model:
+
+| Mechanism | Output |
+| --- | --- |
+| `response_format={"type":"json_object"}` | `{"type":"support_ticket","category":"Billing Issue","subcategory":"Duplicate Charge"}` — invented fields, out-of-enum value |
+| `response_format={"type":"json_schema"}` | `{"category":"billing","urgency":"low",...}` — exact |
+
+`Classification` in `classification.py` is both the schema sent to the provider and the validator for the reply, so the two cannot drift. The reply is re-validated on arrival regardless — prose-wrapped JSON, a partial object, an invented category and an extra field are all rejected, never repaired.
+
+### Three outcomes, and only three
+
+| Input | Result |
+| --- | --- |
+| Empty or whitespace-only `text` | **422** — validation, before any model call is spent |
+| Anything else | **200** with the object |
+| Model returned something unusable, or the provider failed | **502** with a reason |
+
+A `200` is not automatically a classification. Gibberish, spam and off-topic text are not validation errors — only the model can judge them — so they return `200` with `is_support_ticket: false`, which is what distinguishes junk from a *genuine* ticket that happens to be `category: "other"` (a procurement question, say). **Check the flag, not the category.**
+
+When the flag is `false` the other four fields are fixed constants (`other` / `low` / `neutral` / `false`) rather than whatever the model said. That is deliberate: off-topic prose was measured coming back as `category: "billing"`, which would route junk to the billing queue.
+
+### Untrusted input
+
+Ticket text is treated as data, never instructions. The system prompt says so explicitly, and the grammar is the backstop — injected text cannot emit a value outside the enums or a field outside the schema no matter what it says. Verified against instruction-override, a competing schema, a forged `SYSTEM:` turn, and an injection buried inside a real ticket: every one returned a valid in-enum object.
+
+The grammar constrains *shape*, not *judgement* — injected text can still nudge which valid value is chosen. See the known miss in `samples/tickets.json`.
+
+### Sample tickets
+
+18 samples covering normal tickets, awkward ones (angry-but-trivial, polite-but-critical, multi-issue, non-English), junk, injections, and the two rejected inputs:
+
+```bash
+python samples/run.py                    # against localhost:8000
+python samples/run.py http://localhost:8001
+```
+
+The runner asserts only the hard contract — status code, ticket/non-ticket verdict, and that every value is in its enum. The classifications themselves are judgement calls and are printed for reading, not asserted. Current: **17/18**, with one known miss documented in the sample's own note.
+
 
 ## Logs
 
