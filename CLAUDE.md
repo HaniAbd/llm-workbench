@@ -75,6 +75,8 @@ Two kinds of field, deliberately: `category` and the booleans are **exact** (nom
 
 Comparability is enforced by digests: `scorer_digest` hashes the scoring rules, so changing how a score is computed **refuses** comparison with older runs rather than silently redefining the number. A changed `dataset_digest` still compares, on the shared cases. A changed `prompt_id` compares and is labelled `ACROSS PROMPTS` — that is the comparison the suite exists for.
 
+Every run is compared twice, labelled and with run ids: **vs REFERENCE** (a run pinned in `evals/reference.json` via `--set-baseline`, which stays put until changed) and **vs previous run** (whatever ran last). **Regressions are judged against the reference** — comparing against the last run means each experiment is judged against the previous experiment, so restoring a known-good prompt reports phantom regressions. Unpinned, it falls back to previous-run behaviour and says so.
+
 Failures split into **accepted** (blessed in `cases.json`), **regressions** (worse than baseline — exits non-zero), **outstanding** (known bad, no worse) and **fixed**, so a new break is never buried under a familiar one.
 
 #### Development traces

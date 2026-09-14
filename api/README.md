@@ -193,9 +193,12 @@ The grammar constrains *shape*, not *judgement* — injected text can still nudg
 `evals/` answers "is the classifier better or worse than last time", not "does it pass". A run produces **one score** plus a breakdown, and appends itself to `evals/runs.jsonl` so comparing with last time needs no bookkeeping.
 
 ```bash
-python evals/run.py                    # 34 cases, ~55s
-python evals/run.py --group arguable   # one group, for a fast loop (not saved)
-python evals/run.py --history          # past runs, makes no calls
+python evals/run.py                     # 34 cases, ~55s
+python evals/run.py --group arguable    # one group, for a fast loop (not saved)
+python evals/run.py --history           # past runs, makes no calls
+python evals/run.py --set-baseline      # pin the latest run as the reference
+python evals/run.py --set-baseline c5f58  # pin a specific run (id prefix)
+python evals/run.py --clear-baseline    # unpin
 ```
 
 ```
@@ -230,6 +233,21 @@ A field omitted from a case's `expect` is not scored — used where there is gen
 | `scorer_digest` | **Comparison refused.** The digest is a hash of the scoring rules, so changing any credit value or scale invalidates old scores automatically — no version number anyone has to remember to bump. |
 | `dataset_digest` | Comparison still offered, computed over the cases both runs share, and the report says how many that was. Adding cases does not throw away history. |
 | `prompt_id` | Comparison offered and labelled `ACROSS PROMPTS` with both ids. This is the comparison you want, so it is flagged rather than refused. |
+
+#### Two comparisons, and which one you are reading
+
+Every run is compared against two things, printed separately and labelled with the run id each refers to:
+
+| Heading | Against | Answers |
+| --- | --- | --- |
+| `vs REFERENCE (pinned)` | the run pinned in `evals/reference.json`, until you change it | "is this better or worse than my known-good?" |
+| `vs previous run` | whatever ran last | "what did the change I just made do?" |
+
+**Regressions are judged against the reference**, which is the point of pinning one. Comparing against whatever ran last means that during prompt iteration each experiment is judged against the previous experiment, so restoring a known-good prompt reports regressions when nothing has regressed — the bucket is least trustworthy exactly when it matters most. With nothing pinned the old behaviour applies (regressions vs the previous run) and the report says so.
+
+Runs are addressed by a short id shown in `--history`, derived from the run's timestamp rather than stored, so runs recorded before pinning existed are addressable too. `--set-baseline` accepts an id prefix; `--history` marks the pinned run with `REF ->`.
+
+A pinned reference is refused, with a reason, if it has left `runs.jsonl` or was scored with different rules — the same rule as any other comparison: a score only means something against another score computed the same way.
 
 #### Known failures are not regressions
 

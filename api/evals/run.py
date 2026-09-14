@@ -5,6 +5,21 @@
     python evals/run.py --group arguable     # one group, for a fast loop
     python evals/run.py --api http://localhost:8001
     python evals/run.py --history            # past runs, no calls made
+    python evals/run.py --set-baseline       # pin the latest run as reference
+    python evals/run.py --set-baseline c5f58  # pin a specific run
+    python evals/run.py --clear-baseline     # unpin
+
+Every run is compared twice, and the two answer different questions:
+
+  vs REFERENCE     a run you pinned, and it stays pinned until you change it.
+                   Regressions are judged against this, so restoring a
+                   known-good prompt does not read as a regression merely
+                   because the run before it happened to score higher.
+  vs previous run  whatever ran last. Answers "what did the change I just
+                   made do", which is the question during a tight loop.
+
+With nothing pinned, regressions fall back to the previous run - the old
+behaviour - and the report says so.
 
 Produces one number per run plus a breakdown by field and by group. A run is
 appended to evals/runs.jsonl, so comparing against last time needs no
@@ -39,6 +54,7 @@ import scoring  # noqa: E402
 
 DATA = json.loads((HERE / "cases.json").read_text())
 RUNS_PATH = HERE / "runs.jsonl"
+REF_PATH = HERE / "reference.json"
 
 # Notes and prose are excluded so that rewording a comment does not invalidate
 # a comparison; only what is actually asked and accepted counts.
@@ -165,11 +181,77 @@ def classify_misses(run: dict, cases: list, baseline):
     return accepted, regression, outstanding, fixed
 
 
-def find_baseline(run: dict):
-    """Most recent earlier run whose score means the same thing."""
+def run_id_of(run: dict) -> str:
+    """Short stable handle for a run.
+
+    Derived from the timestamp rather than stored, so runs written before this
+    existed are addressable too and no record had to be rewritten.
+    """
+    return scoring.digest(run["at"])[:8]
+
+
+def load_runs() -> list:
     if not RUNS_PATH.exists():
-        return None, "no earlier runs"
-    prior = [json.loads(l) for l in RUNS_PATH.read_text().splitlines() if l.strip()]
+        return []
+    return [json.loads(l) for l in RUNS_PATH.read_text().splitlines() if l.strip()]
+
+
+def load_reference() -> dict | None:
+    """The pinned reference, or None if nothing is pinned."""
+    if not REF_PATH.exists():
+        return None
+    return json.loads(REF_PATH.read_text())
+
+
+def set_reference(run_id: str | None) -> int:
+    """Pin a run as the reference. Defaults to the most recent run."""
+    runs = load_runs()
+    if not runs:
+        print("no runs to pin")
+        return 2
+    if run_id is None:
+        target = runs[-1]
+    else:
+        matches = [r for r in runs if run_id_of(r).startswith(run_id)]
+        if not matches:
+            print(f"no run matching {run_id!r} (see --history)")
+            return 2
+        if len(matches) > 1:
+            print(f"{run_id!r} matches {len(matches)} runs; use more characters")
+            return 2
+        target = matches[0]
+
+    REF_PATH.write_text(
+        json.dumps(
+            {
+                "run_id": run_id_of(target),
+                "at": target["at"],
+                "prompt_id": target["prompt_id"],
+                "score": target["score"],
+                "scorer_digest": target["scorer_digest"],
+                "pinned_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    print(f"reference pinned: {run_id_of(target)}  {target['at']}  "
+          f"score {target['score']:.3f}  {target['prompt_id']}")
+    return 0
+
+
+def clear_reference() -> int:
+    if REF_PATH.exists():
+        REF_PATH.unlink()
+        print("reference cleared; comparisons fall back to the previous run")
+    else:
+        print("no reference was pinned")
+    return 0
+
+
+def find_previous(run: dict):
+    """Most recent earlier run whose score means the same thing."""
+    prior = load_runs()
     if not prior:
         return None, "no earlier runs"
     same_scorer = [p for p in prior if p["scorer_digest"] == run["scorer_digest"]]
@@ -181,10 +263,58 @@ def find_baseline(run: dict):
     return same_scorer[-1], None
 
 
-def report(run: dict, cases: list, baseline, why_not) -> int:
-    accepted, regression, outstanding, fixed = classify_misses(run, cases, baseline)
+def find_reference(run: dict):
+    """The pinned run, if one is pinned and still comparable."""
+    ref = load_reference()
+    if ref is None:
+        return None, "none pinned"
+    match = [r for r in load_runs() if run_id_of(r) == ref["run_id"]]
+    if not match:
+        return None, f"pinned run {ref['run_id']} is no longer in runs.jsonl"
+    if match[0]["scorer_digest"] != run["scorer_digest"]:
+        return None, (
+            f"pinned run {ref['run_id']} was scored with {match[0]['scorer_digest']}, "
+            f"this run with {run['scorer_digest']}; re-pin after a scoring change"
+        )
+    return match[0], None
+
+
+def _compare(run: dict, other: dict, heading: str) -> None:
+    """Print one score comparison against `other`."""
+    shared = sorted(set(run["cases"]) & set(other["cases"]))
+    a = mean(run["cases"][c]["score"] for c in shared)
+    b = mean(other["cases"][c]["score"] for c in shared)
+    print(f"\n{heading}  {run_id_of(other)}  {other['at']}  ({len(shared)} shared cases)")
+    if other["prompt_id"] != run["prompt_id"]:
+        print(f"  ACROSS PROMPTS  {other['prompt_id']} -> {run['prompt_id']}")
+    else:
+        print(f"  same prompt ({run['prompt_id']}) - differences are model noise")
+    if len(shared) < other["case_count"] or len(shared) < run["case_count"]:
+        print(f"  dataset changed: that run had {other['case_count']},"
+              f" this run {run['case_count']}; compared on the overlap only")
+    print(f"  {b:.3f} -> {a:.3f}   {a - b:+.3f}")
+
+    moved = [
+        (c, run["cases"][c]["score"] - other["cases"][c]["score"])
+        for c in shared
+        if abs(run["cases"][c]["score"] - other["cases"][c]["score"]) > 1e-9
+    ]
+    for cid, d in sorted(moved, key=lambda m: m[1]):
+        print(f"    {'WORSE' if d < 0 else 'better'} {d:+.3f}  {cid}")
+    if not moved:
+        print("    no case changed")
+
+
+def report(run: dict, cases: list, reference, ref_why, previous, prev_why) -> int:
+    # Regressions are judged against the reference when one is pinned. That is
+    # the whole point: restoring a known-good prompt must not read as a
+    # regression just because the run before it happened to score higher.
+    basis = reference if reference else previous
+    basis_name = "reference" if reference else "previous run"
+    accepted, regression, outstanding, fixed = classify_misses(run, cases, basis)
 
     print(f"\nscore  {run['score']:.3f}   ({run['case_count']} cases, {run['elapsed_s']}s)")
+    print(f"run    {run_id_of(run)}")
     print(f"prompt {run['prompt_id'] or 'MIXED: ' + ', '.join(run['prompt_ids_seen'])}")
     print(f"scorer {run['scorer_digest']}   dataset {run['dataset_digest']}")
 
@@ -195,32 +325,20 @@ def report(run: dict, cases: list, baseline, why_not) -> int:
     for g, v in run["by_group"].items():
         print(f"  {g:<20} {v:.3f}")
 
-    if baseline:
-        shared = sorted(set(run["cases"]) & set(baseline["cases"]))
-        a = mean(run["cases"][c]["score"] for c in shared)
-        b = mean(baseline["cases"][c]["score"] for c in shared)
-        delta = a - b
-        print(f"\nvs {baseline['at']}  ({len(shared)} shared cases)")
-        if baseline["prompt_id"] != run["prompt_id"]:
-            print(f"  ACROSS PROMPTS  {baseline['prompt_id']} -> {run['prompt_id']}")
-        else:
-            print(f"  same prompt ({run['prompt_id']}) - differences are model noise")
-        if len(shared) < baseline["case_count"] or len(shared) < run["case_count"]:
-            print(f"  dataset changed: baseline had {baseline['case_count']},"
-                  f" this run {run['case_count']}; compared on the overlap only")
-        print(f"  {b:.3f} -> {a:.3f}   {delta:+.3f}")
-
-        moved = [
-            (c, run["cases"][c]["score"] - baseline["cases"][c]["score"])
-            for c in shared
-            if abs(run["cases"][c]["score"] - baseline["cases"][c]["score"]) > 1e-9
-        ]
-        for cid, d in sorted(moved, key=lambda m: m[1]):
-            print(f"    {'WORSE' if d < 0 else 'better'} {d:+.3f}  {cid}")
-        if not moved:
-            print("    no case changed")
+    if reference:
+        _compare(run, reference, "vs REFERENCE (pinned)")
     else:
-        print(f"\nno comparison: {why_not}")
+        print(f"\nvs REFERENCE (pinned): none - {ref_why}")
+        print("  pin one with:  python evals/run.py --set-baseline [RUN_ID]")
+
+    # Kept alongside the reference, not replaced by it: this is the one that
+    # answers "what did the change I just made do".
+    if previous and not (reference and run_id_of(previous) == run_id_of(reference)):
+        _compare(run, previous, "vs previous run")
+    elif not previous:
+        print(f"\nvs previous run: none - {prev_why}")
+    else:
+        print("\nvs previous run: same run as the reference")
 
     if fixed:
         print("\naccepted failures that now pass (consider removing the acceptance)")
@@ -231,14 +349,14 @@ def report(run: dict, cases: list, baseline, why_not) -> int:
     for cid, field, sc, got in accepted:
         print(f"  {cid}.{field} = {sc} (got {got!r})")
 
-    if baseline:
-        print(f"\nREGRESSIONS: {len(regression)}   (worse than the baseline)")
+    if basis:
+        print(f"\nREGRESSIONS vs {basis_name} {run_id_of(basis)}: {len(regression)}")
         for cid, field, sc, got, prev in sorted(regression, key=lambda r: r[2] - r[4]):
             print(f"  {cid}.{field}  {prev} -> {sc} (got {got!r})")
     else:
-        print("\nREGRESSIONS: n/a   (no baseline yet - nothing can be new)")
+        print("\nREGRESSIONS: n/a   (nothing to compare against)")
 
-    label = "outstanding" if baseline else "failing, not accepted"
+    label = "outstanding" if basis else "failing, not accepted"
     print(f"\n{label}: {len(outstanding)}")
     for cid, field, sc, got in sorted(outstanding, key=lambda u: u[2]):
         print(f"  {cid}.{field} = {sc} (got {got!r})")
@@ -247,15 +365,21 @@ def report(run: dict, cases: list, baseline, why_not) -> int:
 
 
 def show_history() -> int:
-    if not RUNS_PATH.exists():
+    runs = load_runs()
+    if not runs:
         print("no runs yet")
         return 0
-    for line in RUNS_PATH.read_text().splitlines():
-        if not line.strip():
-            continue
-        r = json.loads(line)
-        print(f"{r['at']}  {r['score']:.3f}  {r['case_count']:>3} cases  "
+    ref = load_reference()
+    ref_id = ref["run_id"] if ref else None
+    for r in runs:
+        rid = run_id_of(r)
+        mark = "REF ->" if rid == ref_id else "      "
+        print(f"{mark} {rid}  {r['at']}  {r['score']:.3f}  {r['case_count']:>3} cases  "
               f"scorer {r['scorer_digest']}  {r['prompt_id']}")
+    if ref_id and not any(run_id_of(r) == ref_id for r in runs):
+        print(f"\nwarning: pinned reference {ref_id} is not in runs.jsonl")
+    if not ref_id:
+        print("\nno reference pinned - comparisons fall back to the previous run")
     return 0
 
 
@@ -265,10 +389,18 @@ def main() -> int:
     ap.add_argument("--group", help="only run one group (clean, arguable, junk, injection, rejected)")
     ap.add_argument("--history", action="store_true", help="list past runs and exit")
     ap.add_argument("--no-save", action="store_true", help="do not append to runs.jsonl")
+    ap.add_argument("--set-baseline", nargs="?", const="", metavar="RUN_ID",
+                    help="pin a run as the reference (default: the most recent) and exit")
+    ap.add_argument("--clear-baseline", action="store_true",
+                    help="unpin the reference and exit")
     args = ap.parse_args()
 
     if args.history:
         return show_history()
+    if args.clear_baseline:
+        return clear_reference()
+    if args.set_baseline is not None:
+        return set_reference(args.set_baseline or None)
 
     cases = DATA["cases"]
     if args.group:
@@ -278,13 +410,14 @@ def main() -> int:
             return 2
 
     run = run_once(args.api, cases)
-    baseline, why_not = find_baseline(run)
+    reference, ref_why = find_reference(run)
+    previous, prev_why = find_previous(run)
     # A subset run is not a fair baseline for a later full run, so it is scored
     # and reported but never written to the history.
     if not args.no_save and not args.group:
         with RUNS_PATH.open("a") as fh:
             fh.write(json.dumps(run) + "\n")
-    return report(run, cases, baseline, why_not)
+    return report(run, cases, reference, ref_why, previous, prev_why)
 
 
 if __name__ == "__main__":
