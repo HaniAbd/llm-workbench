@@ -77,6 +77,8 @@ Comparability is enforced by digests: `scorer_digest` hashes the scoring rules, 
 
 Every run is compared twice, labelled and with run ids: **vs REFERENCE** (a run pinned in `evals/reference.json` via `--set-baseline`, which stays put until changed) and **vs previous run** (whatever ran last). **Regressions are judged against the reference** — comparing against the last run means each experiment is judged against the previous experiment, so restoring a known-good prompt reports phantom regressions. Unpinned, it falls back to previous-run behaviour and says so.
 
+A `--group` run is a different measurement, not a smaller one: it is never saved or pinnable, its score is marked as not comparable to a full run, unexercised fields and unrun groups are named, and every failure count is scoped to the group — `0 regressions` over five cases is not an all-clear. Comparisons still work (the other run is recomputed over the same cases) and its full score is printed beside the recomputed one.
+
 Failures split into **accepted** (blessed in `cases.json`), **regressions** (worse than baseline — exits non-zero), **outstanding** (known bad, no worse) and **fixed**, so a new break is never buried under a familiar one.
 
 #### Development traces

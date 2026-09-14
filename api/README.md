@@ -194,7 +194,7 @@ The grammar constrains *shape*, not *judgement* — injected text can still nudg
 
 ```bash
 python evals/run.py                     # 34 cases, ~55s
-python evals/run.py --group arguable    # one group, for a fast loop (not saved)
+python evals/run.py --group arguable    # one group, for a fast loop (see below)
 python evals/run.py --history           # past runs, makes no calls
 python evals/run.py --set-baseline      # pin the latest run as the reference
 python evals/run.py --set-baseline c5f58  # pin a specific run (id prefix)
@@ -233,6 +233,31 @@ A field omitted from a case's `expect` is not scored — used where there is gen
 | `scorer_digest` | **Comparison refused.** The digest is a hash of the scoring rules, so changing any credit value or scale invalidates old scores automatically — no version number anyone has to remember to bump. |
 | `dataset_digest` | Comparison still offered, computed over the cases both runs share, and the report says how many that was. Adding cases does not throw away history. |
 | `prompt_id` | Comparison offered and labelled `ACROSS PROMPTS` with both ids. This is the comparison you want, so it is flagged rather than refused. |
+
+#### Subset runs
+
+`--group` runs a single group for a fast loop. It is a **different measurement, not a smaller one**, and the report says so rather than looking like a full run that scored well:
+
+```
+SUBSET RUN  group=junk  5 of 34 cases  (29 not run)
+score  1.000   <- THIS SUBSET ONLY, not comparable to a full-run score (8.7s)
+       not recorded in runs.jsonl and cannot be pinned as a reference
+...
+  not exercised: category, requires_human, urgency, sentiment
+  not run: arguable, clean, injection, rejected
+
+REGRESSIONS vs reference 1bd8e54b within group junk: 0
+  only 5 of 34 cases ran - this is NOT an all-clear for the suite
+```
+
+Every failure count is scoped to the group, because `0 regressions` across five cases is not the same claim as `0 regressions` across the suite — and the accepted failure lives in `injection`, so a `junk` run would otherwise report `accepted failures: 0` as though it had gone away.
+
+Comparisons still work, because the other run is recomputed over the same cases. The report prints that run's full score beside its recomputed one so the two cannot be confused:
+
+```
+subset comparison: that run's full score was 0.911; over these 5 cases it is 1.000
+1.000 -> 1.000   +0.000
+```
 
 #### Two comparisons, and which one you are reading
 

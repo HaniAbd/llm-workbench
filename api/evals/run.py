@@ -21,6 +21,15 @@ Every run is compared twice, and the two answer different questions:
 With nothing pinned, regressions fall back to the previous run - the old
 behaviour - and the report says so.
 
+A --group run is a different measurement, not a smaller one. Its score covers
+only that group, so it is not comparable to a full-run score, it is never
+written to runs.jsonl, and it cannot be pinned. The report says all of this,
+names the fields and groups that did not run, and scopes every failure count
+to the group - a subset reporting "0 regressions" is not an all-clear for the
+suite. Comparisons still work, because the other run is recomputed over the
+same cases; the report prints that run's full score next to its recomputed one
+so the two cannot be confused.
+
 Produces one number per run plus a breakdown by field and by group. A run is
 appended to evals/runs.jsonl, so comparing against last time needs no
 bookkeeping.
@@ -279,7 +288,7 @@ def find_reference(run: dict):
     return match[0], None
 
 
-def _compare(run: dict, other: dict, heading: str) -> None:
+def _compare(run: dict, other: dict, heading: str, sub=None) -> None:
     """Print one score comparison against `other`."""
     shared = sorted(set(run["cases"]) & set(other["cases"]))
     a = mean(run["cases"][c]["score"] for c in shared)
@@ -289,7 +298,13 @@ def _compare(run: dict, other: dict, heading: str) -> None:
         print(f"  ACROSS PROMPTS  {other['prompt_id']} -> {run['prompt_id']}")
     else:
         print(f"  same prompt ({run['prompt_id']}) - differences are model noise")
-    if len(shared) < other["case_count"] or len(shared) < run["case_count"]:
+    if sub:
+        # Not a dataset change - this run deliberately ran fewer cases. Showing
+        # the other run's headline next to its recomputed value is what stops
+        # "1.000 vs 0.911" being read as an improvement.
+        print(f"  subset comparison: that run's full score was {other['score']:.3f};"
+              f" over these {len(shared)} cases it is {b:.3f}")
+    elif len(shared) < other["case_count"] or len(shared) < run["case_count"]:
         print(f"  dataset changed: that run had {other['case_count']},"
               f" this run {run['case_count']}; compared on the overlap only")
     print(f"  {b:.3f} -> {a:.3f}   {a - b:+.3f}")
@@ -309,11 +324,19 @@ def report(run: dict, cases: list, reference, ref_why, previous, prev_why) -> in
     # Regressions are judged against the reference when one is pinned. That is
     # the whole point: restoring a known-good prompt must not read as a
     # regression just because the run before it happened to score higher.
+    sub = run.get("subset")
     basis = reference if reference else previous
     basis_name = "reference" if reference else "previous run"
     accepted, regression, outstanding, fixed = classify_misses(run, cases, basis)
 
-    print(f"\nscore  {run['score']:.3f}   ({run['case_count']} cases, {run['elapsed_s']}s)")
+    if sub:
+        print(f"\nSUBSET RUN  group={sub['group']}  {sub['cases']} of {sub['of']} cases"
+              f"  ({sub['of'] - sub['cases']} not run)")
+        print(f"score  {run['score']:.3f}   <- THIS SUBSET ONLY, not comparable to a"
+              f" full-run score ({run['elapsed_s']}s)")
+        print("       not recorded in runs.jsonl and cannot be pinned as a reference")
+    else:
+        print(f"\nscore  {run['score']:.3f}   ({run['case_count']} cases, {run['elapsed_s']}s)")
     print(f"run    {run_id_of(run)}")
     print(f"prompt {run['prompt_id'] or 'MIXED: ' + ', '.join(run['prompt_ids_seen'])}")
     print(f"scorer {run['scorer_digest']}   dataset {run['dataset_digest']}")
@@ -321,12 +344,19 @@ def report(run: dict, cases: list, reference, ref_why, previous, prev_why) -> in
     print("\nby field")
     for f, v in run["by_field"].items():
         print(f"  {f:<20} {v:.3f}")
+    unexercised = [f for f in scoring.SCORED_FIELDS if f not in run["by_field"]]
+    if unexercised:
+        print(f"  not exercised: {', '.join(unexercised)}")
     print("by group")
     for g, v in run["by_group"].items():
         print(f"  {g:<20} {v:.3f}")
+    if sub:
+        skipped = sorted({c["group"] for c in DATA["cases"]} - set(run["by_group"]))
+        if skipped:
+            print(f"  not run: {', '.join(skipped)}")
 
     if reference:
-        _compare(run, reference, "vs REFERENCE (pinned)")
+        _compare(run, reference, "vs REFERENCE (pinned)", sub)
     else:
         print(f"\nvs REFERENCE (pinned): none - {ref_why}")
         print("  pin one with:  python evals/run.py --set-baseline [RUN_ID]")
@@ -334,7 +364,7 @@ def report(run: dict, cases: list, reference, ref_why, previous, prev_why) -> in
     # Kept alongside the reference, not replaced by it: this is the one that
     # answers "what did the change I just made do".
     if previous and not (reference and run_id_of(previous) == run_id_of(reference)):
-        _compare(run, previous, "vs previous run")
+        _compare(run, previous, "vs previous run", sub)
     elif not previous:
         print(f"\nvs previous run: none - {prev_why}")
     else:
@@ -345,19 +375,23 @@ def report(run: dict, cases: list, reference, ref_why, previous, prev_why) -> in
         for cid, field in fixed:
             print(f"  {cid}.{field}")
 
-    print(f"\naccepted failures: {len(accepted)}   (blessed in cases.json)")
+    scope = f" within group {sub['group']}" if sub else ""
+    print(f"\naccepted failures{scope}: {len(accepted)}   (blessed in cases.json)")
     for cid, field, sc, got in accepted:
         print(f"  {cid}.{field} = {sc} (got {got!r})")
 
     if basis:
-        print(f"\nREGRESSIONS vs {basis_name} {run_id_of(basis)}: {len(regression)}")
+        print(f"\nREGRESSIONS vs {basis_name} {run_id_of(basis)}{scope}: {len(regression)}")
+        if sub:
+            print(f"  only {sub['cases']} of {sub['of']} cases ran - this is NOT an"
+                  " all-clear for the suite")
         for cid, field, sc, got, prev in sorted(regression, key=lambda r: r[2] - r[4]):
             print(f"  {cid}.{field}  {prev} -> {sc} (got {got!r})")
     else:
         print("\nREGRESSIONS: n/a   (nothing to compare against)")
 
     label = "outstanding" if basis else "failing, not accepted"
-    print(f"\n{label}: {len(outstanding)}")
+    print(f"\n{label}{scope}: {len(outstanding)}")
     for cid, field, sc, got in sorted(outstanding, key=lambda u: u[2]):
         print(f"  {cid}.{field} = {sc} (got {got!r})")
 
@@ -410,6 +444,13 @@ def main() -> int:
             return 2
 
     run = run_once(args.api, cases)
+    # A subset run is a different measurement, not a smaller one, so it says so
+    # in its own record rather than looking like a full run with fewer cases.
+    run["subset"] = (
+        {"group": args.group, "cases": len(cases), "of": len(DATA["cases"])}
+        if args.group
+        else None
+    )
     reference, ref_why = find_reference(run)
     previous, prev_why = find_previous(run)
     # A subset run is not a fair baseline for a later full run, so it is scored
