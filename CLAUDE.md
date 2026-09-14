@@ -57,7 +57,7 @@ node 01-first-call.js      # any single file; they are not wired to npm scripts
 - `usage` → `{input_tokens, output_tokens}` — arrives at the end, requires `stream_options={"include_usage": True}`
 - `done` → `{}` — terminator
 
-CORS is locked to `http://localhost:3000`, i.e. the Next dev server. The system prompt and `temperature=0` are hardcoded server-side, and `Message.role` is `Literal["user", "assistant"]` so a client cannot supply a `system` turn of its own — such a request is **rejected with a 422** by validation, before the handler runs, rather than being stripped. Rejected requests never open a span, so they leave no `llm_call` line.
+CORS accepts **any localhost port** via `allow_origin_regex`, not a fixed origin — the Next dev server falls back to 3001, 3002, … whenever its usual port is taken by another project, and a hardcoded origin breaks the page with an opaque "Failed to fetch" when it does. The system prompt and `temperature=0` are hardcoded server-side, and `Message.role` is `Literal["user", "assistant"]` so a client cannot supply a `system` turn of its own — such a request is **rejected with a 422** by validation, before the handler runs, rather than being stripped. Rejected requests never open a span, so they leave no `llm_call` line.
 
 #### Tracing seam
 
@@ -87,7 +87,7 @@ curl -N http://localhost:8000/chat -H 'content-type: application/json' \
 
 ```bash
 cd web
-npm run dev     # port 3000 — must match the API's CORS allowlist
+npm run dev     # 3000, or the next free port; any localhost port is CORS-allowed
 npm run build
 npm run lint
 ```

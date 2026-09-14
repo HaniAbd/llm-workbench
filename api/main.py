@@ -23,7 +23,11 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    # Any localhost port, not just 3000. The Next dev server falls back to
+    # 3001, 3002, ... when its usual port is already taken by another
+    # project, and a hardcoded origin silently breaks the page when it does.
+    # Starlette fullmatches this, so it cannot match http://localhost.evil.com.
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_methods=["*"],
     allow_headers=["*"],
 )
