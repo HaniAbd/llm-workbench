@@ -49,8 +49,50 @@ class ChatSpan:
     finish_reason: str | None = None
     error: str | None = None
 
+    # What the model was actually sent, and what it said before anything
+    # reformatted it. Neither is in the log line - they are unbounded, and a
+    # log line has to stay one greppable row.
+    messages_sent: list[dict] | None = None
+    raw_output: str | None = None
+
+    # Ordered, typed steps. This is the growth path: retrieval, tool calls and
+    # agent steps append here without changing any field above or any consumer
+    # that does not know about them.
+    events: list[dict] = field(default_factory=list)
+
     _t0: float = field(default_factory=time.perf_counter, repr=False)
     _ttft: float | None = field(default=None, repr=False)
+
+    def record(self, kind: str, **data: object) -> None:
+        """Append one step, stamped with how far into the call it happened."""
+        self.events.append(
+            {
+                "at_ms": round((time.perf_counter() - self._t0) * 1000),
+                "kind": kind,
+                **data,
+            }
+        )
+
+    def trace(self) -> dict:
+        """The document handed to the browser.
+
+        A superset of the log line. The log stays scalar and greppable; this
+        carries the bulky parts - the messages, the raw reply, the step list -
+        because a development panel wants exactly what a log file should not.
+        """
+        return {
+            "model": self.model,
+            "prompt_id": self.prompt_id,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "ttft_ms": self.ttft_ms,
+            "latency_ms": self.latency_ms,
+            "finish_reason": self.finish_reason,
+            "error": self.error,
+            "messages_sent": self.messages_sent,
+            "raw_output": self.raw_output,
+            "events": self.events,
+        }
 
     def first_token(self) -> None:
         """Mark the first content token. Idempotent, so it can be called on

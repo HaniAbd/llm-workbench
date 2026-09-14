@@ -101,15 +101,18 @@ def classify(client, model: str, text: str, span=None) -> ClassificationResult:
     worthless.
     """
     prompt = _prompt()
+    messages = [
+        {"role": "system", "content": prompt.text},
+        {"role": "user", "content": text},
+    ]
     if span is not None:
         span.prompt_id = prompt.id
+        span.messages_sent = messages
+        span.record("request_sent", schema_constrained=True)
 
     completion = client.chat.completions.create(
         model=model,
-        messages=[
-            {"role": "system", "content": prompt.text},
-            {"role": "user", "content": text},
-        ],
+        messages=messages,
         temperature=0,
         response_format={
             "type": "json_schema",
@@ -130,15 +133,25 @@ def classify(client, model: str, text: str, span=None) -> ClassificationResult:
         span.finish_reason = choice.finish_reason
 
     raw = choice.message.content or ""
+    if span is not None:
+        span.raw_output = raw
+        span.record("response_received", chars=len(raw))
 
     # Validates JSON syntax, field presence, enum membership and the absence of
     # extra keys in one step. Prose-wrapped JSON fails here at the parse stage.
     try:
         result = Classification.model_validate_json(raw)
     except ValidationError as exc:
+        if span is not None:
+            span.record("validation_failed", detail=str(exc).splitlines()[0][:160])
         raise ClassificationError(
             f"model returned output that is not a valid classification: {raw[:200]!r}"
         ) from exc
+
+    if not result.is_support_ticket and span is not None:
+        # Worth seeing in the panel: the fields below are the server's
+        # constants, not what the model said.
+        span.record("normalised_non_ticket", model_said=result.model_dump())
 
     classification = NOT_A_TICKET if not result.is_support_ticket else result
     return ClassificationResult(**classification.model_dump(), prompt_id=prompt.id)

@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -78,6 +78,8 @@ def chat(req: ChatRequest):
         # stream completes. Marking it costs nothing per token.
         with chat_span(MODEL) as span:
             span.prompt_id = prompt.id
+            span.messages_sent = messages
+            span.record("request_sent", message_count=len(messages))
             # The identity reaches the caller, not just the log. Additive: the
             # event dispatch in web/ is a bare if/else-if chain, so a client
             # that does not know this event ignores it.
@@ -91,11 +93,13 @@ def chat(req: ChatRequest):
                 stream_options={"include_usage": True},
             )
 
+            deltas: list[str] = []
             for chunk in stream:
                 if chunk.choices:
                     choice = chunk.choices[0]
                     if choice.delta.content:
                         span.first_token()
+                        deltas.append(choice.delta.content)
                         yield sse("token", {"text": choice.delta.content})
                     if choice.finish_reason:
                         span.finish_reason = choice.finish_reason
@@ -113,6 +117,12 @@ def chat(req: ChatRequest):
                         },
                     )
 
+            # After every token, so it cannot delay the stream. The web
+            # client ignores event types it does not know, so this is additive.
+            span.raw_output = "".join(deltas)
+            span.record("stream_complete", token_events=len(deltas))
+            yield sse("trace", span.trace())
+
             yield sse("done", {})
 
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -128,21 +138,39 @@ class ClassifyRequest(BaseModel):
     text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
-@app.post("/classify", response_model=ClassificationResult)
+class ClassificationResponse(ClassificationResult):
+    """The classification plus the development trace behind it."""
+
+    trace: dict[str, Any]
+
+
+def _failure(span, message: str) -> dict[str, Any]:
+    """Error body that still shows what was sent and how far it got."""
+    return {"message": message, "trace": span.trace() if span is not None else None}
+
+
+@app.post("/classify", response_model=ClassificationResponse)
 def classify_ticket(req: ClassifyRequest):
     """Classify one support ticket. Whole object or an error — never partial.
 
     Not streamed: the caller wants a complete result, and a half-received
     object cannot be validated against the schema.
     """
+    captured = None
     try:
         with chat_span(MODEL) as span:
-            return classify(client, MODEL, req.text, span)
+            captured = span
+            result = classify(client, MODEL, req.text, span)
     except ClassificationError as exc:
         # The model produced something unusable. Surfaced as a failure rather
         # than repaired, so a malformed result can never reach the caller.
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=502, detail=_failure(captured, str(exc))
+        ) from exc
     except OpenAIError as exc:
         raise HTTPException(
-            status_code=502, detail=f"provider call failed: {type(exc).__name__}"
+            status_code=502,
+            detail=_failure(captured, f"provider call failed: {type(exc).__name__}"),
         ) from exc
+
+    return ClassificationResponse(**result.model_dump(), trace=captured.trace())

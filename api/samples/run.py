@@ -44,7 +44,7 @@ def contract_violations(status, body, expect):
         bad.append(f"status {status} != {expect['status']}")
     if status != 200:
         return bad
-    if set(body) != {"is_support_ticket", "category", "urgency", "sentiment", "requires_human", "prompt_id"}:
+    if set(body) != {"is_support_ticket", "category", "urgency", "sentiment", "requires_human", "prompt_id", "trace"}:
         bad.append(f"field set {sorted(body)}")
     pid = body.get("prompt_id", "")
     if not re.fullmatch(r"[a-z_]+@[0-9a-f]{12}", pid):
@@ -57,6 +57,11 @@ def contract_violations(status, body, expect):
         bad.append(f"sentiment {body.get('sentiment')!r} outside enum")
     if not isinstance(body.get("requires_human"), bool):
         bad.append("requires_human not a bool")
+    tr = body.get("trace") or {}
+    if tr.get("prompt_id") != pid:
+        bad.append("trace.prompt_id disagrees with prompt_id")
+    if tr.get("messages_sent") is None or tr.get("raw_output") is None:
+        bad.append("trace missing messages_sent/raw_output")
     if "is_support_ticket" in expect and body.get("is_support_ticket") != expect["is_support_ticket"]:
         bad.append(f"is_support_ticket {body.get('is_support_ticket')} != {expect['is_support_ticket']}")
     return bad

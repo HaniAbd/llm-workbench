@@ -126,6 +126,7 @@ Plus one sent before the model is even called:
 | Event | Payload | Notes |
 | --- | --- | --- |
 | `prompt` | `{id}` | Which prompt produced this reply, e.g. `chat_system@730d676a910d`. Arrives first, before any token. |
+| `trace` | the trace document | Sent **after every token**, before `done`, so it cannot delay the stream. See [Development traces](#development-traces). |
 
 `finish` arrives before `usage`. Consume events by name, not by position.
 
@@ -154,6 +155,7 @@ curl -s http://localhost:8000/classify -H 'content-type: application/json' \
 | `sentiment` | `positive` `neutral` `frustrated` `angry` |
 | `requires_human` | `true` / `false` |
 | `prompt_id` | `name@digest` — the exact prompt that produced this result |
+| `trace` | the trace document — see [Development traces](#development-traces) |
 
 ### How the shape is guaranteed
 
@@ -265,6 +267,33 @@ Both flags are load-bearing. `grep` and `jq` each switch to block buffering when
 `ttft_ms` is time to first token — the number that governs how responsive the UI feels. `latency_ms` covers the whole call. A call that fails still logs, with `error` set to the exception class and the fields that never arrived left `null`.
 
 This is the seam for real tracing later: `chat_span()` is shaped like an OpenTelemetry span or a Langfuse generation, so replacing it means rewriting `chat_span` and `_emit` in `tracing.py` and leaving `main.py` alone.
+
+## Development traces
+
+Both endpoints return a `trace` alongside their normal output: on `/classify` as a field, on `/chat` as a `trace` SSE event emitted after the last token. It is what the `web/` panel renders, and it is a **superset of the `llm_call` log line** — the log stays scalar and greppable, the trace carries the bulky parts a log file should not.
+
+```json
+{
+  "model": "llama3.2",
+  "prompt_id": "classify_ticket@70645fce0f63",
+  "input_tokens": 447, "output_tokens": 45,
+  "ttft_ms": null, "latency_ms": 5877,
+  "finish_reason": "stop", "error": null,
+  "messages_sent": [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}],
+  "raw_output": "{ \"is_support_ticket\": true, ... }",
+  "events": [{"at_ms": 0, "kind": "request_sent", "schema_constrained": true},
+             {"at_ms": 5877, "kind": "response_received", "chars": 142}]
+}
+```
+
+`messages_sent` and `raw_output` answer the two questions the log cannot: what the model was actually sent, and what it said *before* validation or normalisation touched it.
+
+`events` is an ordered list of typed steps and is the growth path — retrieval, tool calls and agent steps append here without changing any field above, and the panel renders unknown kinds generically rather than ignoring them. It already earns its keep: classify a piece of spam and the `normalised_non_ticket` step shows what the model actually answered before the server replaced it with constants.
+
+A failed call still carries a trace. A `502` body is `{"message": ..., "trace": {...}}`, so a provider failure shows what was sent and how far it got. A `422` does not — validation rejects before any model call, so there is nothing to trace.
+
+**This is a development aid.** It travels inline with the response, so a caller only ever sees its own call — there is no trace store to query and no id to guess. The cost of that choice is that every response carries the full rendered prompt, which is fine for a local workbench and is the first thing to reconsider if this is ever exposed beyond localhost.
+
 
 ## Known limitations
 

@@ -35,7 +35,7 @@ There is no real API key anywhere — swapping to a hosted provider is a matter 
 | --- | --- | --- |
 | [scripts/](scripts/) | Node ESM, Vercel AI SDK (`ai` + `@ai-sdk/openai`) | Numbered standalone experiments, run directly with `node` |
 | [api/](api/) | FastAPI + `openai` Python SDK | `POST /chat` streams SSE; `POST /classify` returns a schema-constrained object |
-| [web/](web/) | Next.js 16, React 19, Tailwind v4 | Chat UI — streams from the API and renders the transcript |
+| [web/](web/) | Next.js 16, React 19, Tailwind v4 | `/` chat, `/classify` ticket classifier, both with a trace panel |
 
 They are independent: no shared package, no build step linking them. The only contracts between them are the root `.env` and the SSE protocol below.
 
@@ -66,6 +66,14 @@ CORS accepts **any localhost port** via `allow_origin_regex`, not a fixed origin
 One pydantic model (`Classification`) is both the schema sent to the provider and the validator for the reply, so they cannot drift. Replies are re-validated on arrival and rejected rather than repaired.
 
 Blank input is a 422 before any model call; junk gets a 200 with `is_support_ticket: false` and its other fields normalised to constants — **check the flag, not the category**, since a genuine ticket can also be `category: "other"`. `samples/run.py` exercises 18 hand-checkable tickets.
+
+#### Development traces
+
+Both endpoints return a `trace` beside their normal output — a field on `/classify`, a `trace` SSE event after the last token on `/chat` (so it cannot delay streaming). It is a **superset of the `llm_call` log line**: the log stays scalar and greppable, the trace adds `messages_sent`, `raw_output`, and an ordered `events` list.
+
+`events` is the growth path — retrieval, tool calls and agent steps append there without changing any existing field, and `TracePanel` renders unknown kinds generically. `normalised_non_ticket` already shows what the model said before the server replaced it with constants.
+
+Transport is **inline, deliberately**: a caller only ever sees its own call, so there is no trace store to query and no id to guess. The trade is that every response carries the full rendered prompt — fine locally, the first thing to revisit if this leaves localhost. A `502` carries a trace; a `422` does not, because nothing was called.
 
 #### Prompt store
 

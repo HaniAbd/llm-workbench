@@ -1,18 +1,19 @@
 "use client";
 
 import { useState } from "react";
+import TracePanel from "./components/TracePanel";
+import { API_BASE, readSSE, type Trace } from "./lib/api";
 
 type Usage = { inputTokens: number; outputTokens: number };
 
 type Message = {
   role: "user" | "assistant";
   content: string;
-  // Both are filled in from SSE events that arrive after the last token.
+  // All filled in from SSE events that arrive after the last token.
   usage?: Usage;
   finishReason?: string;
+  trace?: Trace;
 };
-
-const API_URL = `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}/chat`;
 
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -34,16 +35,14 @@ export default function Home() {
 
     // every SSE event lands on the assistant message currently streaming
     const patchAssistant = (fn: (m: Message) => Message) =>
-      setMessages((prev) =>
-        prev.map((m, i) => (i === prev.length - 1 ? fn(m) : m)),
-      );
+      setMessages((prev) => prev.map((m, i) => (i === prev.length - 1 ? fn(m) : m)));
 
     try {
-      const res = await fetch(API_URL, {
+      const res = await fetch(`${API_BASE}/chat`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        // the server's schema only has role and content; usage/finishReason
-        // are local display state and must not be sent back as history
+        // the server's schema only has role and content; the display state
+        // below it must not be sent back as history
         body: JSON.stringify({
           messages: history.map(({ role, content }) => ({ role, content })),
         }),
@@ -53,50 +52,26 @@ export default function Home() {
         throw new Error(`request failed: ${res.status}`);
       }
 
-      const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
-      let buffer = "";
-
-      // SSE frames are separated by a blank line; a frame may be split across
-      // reads, so only parse what is terminated.
-      outer: while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += value;
-
-        let split: number;
-        while ((split = buffer.indexOf("\n\n")) !== -1) {
-          const frame = buffer.slice(0, split);
-          buffer = buffer.slice(split + 2);
-
-          let event = "message";
-          let data = "";
-          for (const line of frame.split("\n")) {
-            if (line.startsWith("event: ")) event = line.slice(7);
-            else if (line.startsWith("data: ")) data += line.slice(6);
-          }
-          if (!data) continue;
-
-          const payload = JSON.parse(data);
-          if (event === "token") {
-            patchAssistant((m) => ({ ...m, content: m.content + payload.text }));
-          } else if (event === "usage") {
-            patchAssistant((m) => ({
-              ...m,
-              usage: {
-                inputTokens: payload.input_tokens,
-                outputTokens: payload.output_tokens,
-              },
-            }));
-          } else if (event === "finish") {
-            patchAssistant((m) => ({ ...m, finishReason: payload.reason }));
-          } else if (event === "done") {
-            break outer;
-          }
+      await readSSE(res, (event, data) => {
+        const payload = data as Record<string, never>;
+        if (event === "token") {
+          patchAssistant((m) => ({ ...m, content: m.content + payload.text }));
+        } else if (event === "usage") {
+          patchAssistant((m) => ({
+            ...m,
+            usage: {
+              inputTokens: payload.input_tokens,
+              outputTokens: payload.output_tokens,
+            },
+          }));
+        } else if (event === "finish") {
+          patchAssistant((m) => ({ ...m, finishReason: payload.reason }));
+        } else if (event === "trace") {
+          patchAssistant((m) => ({ ...m, trace: data as Trace }));
+        } else if (event === "done") {
+          return true; // stop reading
         }
-      }
-
-      await reader.cancel();
+      });
     } catch (err) {
       patchAssistant((m) => ({
         ...m,
@@ -111,7 +86,7 @@ export default function Home() {
 
   return (
     <div className="flex flex-1 flex-col items-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex w-full max-w-3xl flex-1 flex-col gap-6 px-6 py-12">
+      <main className="flex w-full max-w-3xl flex-1 flex-col gap-6 px-6 py-10">
         <h1 className="text-2xl font-semibold tracking-tight text-black dark:text-zinc-50">
           Chat
         </h1>
@@ -150,6 +125,8 @@ export default function Home() {
                   input {m.usage.inputTokens} · output {m.usage.outputTokens}
                 </p>
               )}
+
+              {m.trace && <TracePanel trace={m.trace} />}
             </div>
           ))}
         </div>
