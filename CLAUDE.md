@@ -50,7 +50,7 @@ node 01-first-call.js      # any single file; they are not wired to npm scripts
 
 ### api/
 
-`api/main.py` holds the routes; `api/classification.py` is the `/classify` task (schema, prompt, provider call); `api/tracing.py` is the observability seam. See [api/README.md](api/README.md) for the full service docs. `main.py` hand-rolls SSE (`sse()` helper) rather than using a library, emitting four event types that the web client must handle:
+`api/main.py` holds the routes; `api/classification.py` is the `/classify` task (schema, provider call); `api/prompts/` is prompt text plus its loader; `api/tracing.py` is the observability seam. See [api/README.md](api/README.md) for the full service docs. `main.py` hand-rolls SSE (`sse()` helper) rather than using a library, emitting four event types that the web client must handle:
 
 - `token` → `{text}` — one content delta
 - `finish` → `{reason}` — the provider's finish_reason (`length` means truncated; don't parse that output)
@@ -67,12 +67,22 @@ One pydantic model (`Classification`) is both the schema sent to the provider an
 
 Blank input is a 422 before any model call; junk gets a 200 with `is_support_ticket: false` and its other fields normalised to constants — **check the flag, not the category**, since a genuine ticket can also be `category: "other"`. `samples/run.py` exercises 18 hand-checkable tickets.
 
+#### Prompt store
+
+Prompt text lives in `api/prompts/*.md`, never inline in Python. **Editing a prompt needs no code change and no restart** — files are read per request, since `--reload` watches `.py` only.
+
+Identity is `name@digest`, the digest being SHA-256 of the *rendered* text (`classify_ticket@70645fce0f63`). Because the id is derived from the text, editing a prompt cannot silently keep its old id — the guarantee is structural, not a convention. Old text lives in git history rather than on disk; that is the deliberate trade.
+
+The id reaches the caller (`prompt_id` on `/classify`, a `prompt` SSE event on `/chat`) **and** the `llm_call` trace line, so a recorded result is attributable to an exact prompt.
+
+Adding a prompt is adding a `.md` file and calling `prompts.get("name")` — no registry. Placeholders are `$name` (`string.Template`), not `{name}`, because these prompts discuss JSON. `classify_ticket.md` receives its enum values from `classification.py` this way, so prompt and schema cannot disagree.
+
 #### Tracing seam
 
 [api/tracing.py](api/tracing.py) emits **one JSON line per LLM call** on the `llm.trace` logger — model, token counts, `ttft_ms`, `latency_ms`, finish reason:
 
 ```json
-{"event": "llm_call", "model": "llama3.2", "input_tokens": 38, "output_tokens": 70, "ttft_ms": 100, "latency_ms": 2026, "finish_reason": "stop", "error": null}
+{"event": "llm_call", "model": "llama3.2", "prompt_id": "classify_ticket@70645fce0f63", "input_tokens": 38, "output_tokens": 70, "ttft_ms": 100, "latency_ms": 2026, "finish_reason": "stop", "error": null}
 ```
 
 `chat_span(model)` is a context manager yielding a mutable span; the handler marks `first_token()`, `set_usage()` and `finish_reason` as events arrive, and the line is written from a `finally` on close. It is shaped like an OTel span / Langfuse generation on purpose — **replacing it with a real tracing library means rewriting `chat_span` and `_emit`, not touching the handler.** `tracing.py` deliberately knows nothing about OpenAI or FastAPI.

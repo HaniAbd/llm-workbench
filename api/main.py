@@ -7,9 +7,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from openai import OpenAI, OpenAIError
-from pydantic import BaseModel, StringConstraints
+from pydantic import BaseModel, Field, StringConstraints, model_validator
 
-from classification import Classification, ClassificationError, classify
+import prompts
+from classification import ClassificationError, ClassificationResult, classify
 from tracing import chat_span
 
 load_dotenv(dotenv_path="../.env")
@@ -43,10 +44,22 @@ class Message(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    messages: list[Message]
+    # At least one message. An empty list would send the system prompt alone
+    # and bill tokens for a conversation with no user turn, which is the same
+    # hole /classify closes by rejecting blank text.
+    messages: Annotated[list[Message], Field(min_length=1)]
 
+    @model_validator(mode="after")
+    def _must_carry_something_to_answer(self):
+        """At least one message with actual content.
 
-SYSTEM_PROMPT = "You are concise and factual."
+        Checked across the conversation rather than per message: an assistant
+        turn can legitimately be empty (a stream that produced no tokens), and
+        rejecting those would break a history the chat page had already built.
+        """
+        if not any(m.content.strip() for m in self.messages):
+            raise ValueError("conversation has no non-empty message")
+        return self
 
 
 def sse(event: str, data: dict) -> str:
@@ -55,7 +68,8 @@ def sse(event: str, data: dict) -> str:
 
 @app.post("/chat")
 def chat(req: ChatRequest):
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    prompt = prompts.get("chat_system")
+    messages = [{"role": "system", "content": prompt.text}]
     messages += [m.model_dump() for m in req.messages]
 
     def generate():
@@ -63,6 +77,12 @@ def chat(req: ChatRequest):
         # and closes after the last yield so the log line is written once the
         # stream completes. Marking it costs nothing per token.
         with chat_span(MODEL) as span:
+            span.prompt_id = prompt.id
+            # The identity reaches the caller, not just the log. Additive: the
+            # event dispatch in web/ is a bare if/else-if chain, so a client
+            # that does not know this event ignores it.
+            yield sse("prompt", {"id": prompt.id})
+
             stream = client.chat.completions.create(
                 model=MODEL,
                 messages=messages,
@@ -108,7 +128,7 @@ class ClassifyRequest(BaseModel):
     text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
-@app.post("/classify", response_model=Classification)
+@app.post("/classify", response_model=ClassificationResult)
 def classify_ticket(req: ClassifyRequest):
     """Classify one support ticket. Whole object or an error — never partial.
 

@@ -41,6 +41,9 @@ _configure()
 @dataclass
 class ChatSpan:
     model: str
+    # Which prompt produced this call. Set by the caller, carried into the log
+    # line so a recorded result can be attributed to an exact prompt text.
+    prompt_id: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
     finish_reason: str | None = None
@@ -74,6 +77,7 @@ def _emit(span: ChatSpan) -> None:
             {
                 "event": "llm_call",
                 "model": span.model,
+                "prompt_id": span.prompt_id,
                 "input_tokens": span.input_tokens,
                 "output_tokens": span.output_tokens,
                 "ttft_ms": span.ttft_ms,

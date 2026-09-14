@@ -10,6 +10,7 @@ judgement calls, so they are printed for a human to read rather than asserted.
 """
 
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -43,8 +44,11 @@ def contract_violations(status, body, expect):
         bad.append(f"status {status} != {expect['status']}")
     if status != 200:
         return bad
-    if set(body) != {"is_support_ticket", "category", "urgency", "sentiment", "requires_human"}:
+    if set(body) != {"is_support_ticket", "category", "urgency", "sentiment", "requires_human", "prompt_id"}:
         bad.append(f"field set {sorted(body)}")
+    pid = body.get("prompt_id", "")
+    if not re.fullmatch(r"[a-z_]+@[0-9a-f]{12}", pid):
+        bad.append(f"prompt_id {pid!r} not name@digest")
     if body.get("category") not in CAT:
         bad.append(f"category {body.get('category')!r} outside enum")
     if body.get("urgency") not in URG:
@@ -60,6 +64,7 @@ def contract_violations(status, body, expect):
 
 def main():
     failures = 0
+    seen_prompts = set()
     for s in SAMPLES:
         status, body = post(s["text"])
         bad = contract_violations(status, body, s["expect"])
@@ -67,6 +72,7 @@ def main():
         mark = "FAIL" if bad else "ok  "
         print(f"[{mark}] {s['name']}")
         if status == 200:
+            seen_prompts.add(body.get("prompt_id"))
             t = "TICKET    " if body.get("is_support_ticket") else "NOT-TICKET"
             print(
                 f"        {t} {body.get('category'):<10} {body.get('urgency'):<7}"
@@ -84,6 +90,12 @@ def main():
 
     total = len(SAMPLES)
     print(f"contract: {total - failures}/{total} samples OK")
+    # A run that spans two prompt ids is not comparable with itself - the
+    # prompt file changed underneath it.
+    for pid in sorted(p for p in seen_prompts if p):
+        print(f"prompt:   {pid}")
+    if len(seen_prompts - {None}) > 1:
+        print("WARNING: results came from more than one prompt - not comparable")
     return 1 if failures else 0
 
 

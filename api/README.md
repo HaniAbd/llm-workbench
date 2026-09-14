@@ -9,7 +9,8 @@ Two files:
 | File | Responsibility |
 | --- | --- |
 | `main.py` | HTTP layer — routes, request schemas, CORS, the SSE encoding |
-| `classification.py` | The `/classify` task: output schema, prompt, and the provider call |
+| `classification.py` | The `/classify` task: output schema and the provider call |
+| `prompts/` | Prompt text as `.md` files, plus the loader that identifies them |
 | `tracing.py` | Observability seam. Knows nothing about OpenAI or FastAPI |
 
 ## Prerequisites
@@ -88,7 +89,7 @@ data: {}
 
 `messages` is the conversation so far, oldest first. The client resends the whole history on every turn — the server holds no session state, which is why the input token count grows each turn.
 
-**`role` must be `user` or `assistant`.** The server prepends its own system message (`SYSTEM_PROMPT` in `main.py`), and a client that tries to supply a `system` turn is **rejected with `422`** rather than having the message quietly stripped:
+**`role` must be `user` or `assistant`.** The server prepends its own system message (`prompts/chat_system.md`), and a client that tries to supply a `system` turn is **rejected with `422`** rather than having the message quietly stripped:
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8000/chat \
@@ -98,6 +99,16 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8000/chat \
 ```
 
 Rejection happens in validation, before the handler runs, so such a request never reaches the model and costs nothing.
+
+**The conversation must contain something to answer.** An empty list, or one where every message is blank, is a `422` for the same reason `/classify` rejects blank text — otherwise the system prompt would be sent alone and tokens billed for a conversation with no user turn.
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8000/chat \
+  -H 'content-type: application/json' -d '{"messages":[]}'
+# 422
+```
+
+The check is across the conversation, not per message: an assistant turn can legitimately be empty (a stream that produced no tokens), so a history containing one is still accepted as long as something else has content.
 
 ### Response
 
@@ -109,6 +120,12 @@ Rejection happens in validation, before the handler runs, so such a request neve
 | `finish` | `{reason}` | The provider's `finish_reason`. **`length` means the reply was truncated** — surface it, don't present it as a complete answer. |
 | `usage` | `{input_tokens, output_tokens}` | Arrives near the end. Requires `stream_options={"include_usage": True}`. |
 | `done` | `{}` | Terminator. |
+
+Plus one sent before the model is even called:
+
+| Event | Payload | Notes |
+| --- | --- | --- |
+| `prompt` | `{id}` | Which prompt produced this reply, e.g. `chat_system@730d676a910d`. Arrives first, before any token. |
 
 `finish` arrives before `usage`. Consume events by name, not by position.
 
@@ -126,7 +143,7 @@ curl -s http://localhost:8000/classify -H 'content-type: application/json' \
 ```
 
 ```json
-{"is_support_ticket": true, "category": "billing", "urgency": "high", "sentiment": "frustrated", "requires_human": true}
+{"is_support_ticket": true, "category": "billing", "urgency": "high", "sentiment": "frustrated", "requires_human": true, "prompt_id": "classify_ticket@70645fce0f63"}
 ```
 
 | Field | Values |
@@ -136,6 +153,7 @@ curl -s http://localhost:8000/classify -H 'content-type: application/json' \
 | `urgency` | `low` `medium` `high` |
 | `sentiment` | `positive` `neutral` `frustrated` `angry` |
 | `requires_human` | `true` / `false` |
+| `prompt_id` | `name@digest` — the exact prompt that produced this result |
 
 ### How the shape is guaranteed
 
@@ -180,12 +198,55 @@ python samples/run.py http://localhost:8001
 The runner asserts only the hard contract — status code, ticket/non-ticket verdict, and that every value is in its enum. The classifications themselves are judgement calls and are printed for reading, not asserted. Current: **17/18**, with one known miss documented in the sample's own note.
 
 
+## Prompts
+
+Prompt text lives in `prompts/*.md`, never in the Python that sends it. **Changing a prompt means editing a `.md` file — no code change, and no restart:** the file is read per request, because `--reload` watches `.py` only and a cached prompt would keep serving old text after an edit with nothing to show for it.
+
+Every prompt has an id of the form `name@digest`, where the digest is the first 12 hex characters of the SHA-256 of the **rendered** text:
+
+```
+classify_ticket@70645fce0f63
+chat_system@730d676a910d
+```
+
+The id reaches the caller — `prompt_id` on a `/classify` response, a `prompt` SSE event on `/chat` — and the `llm_call` trace line. So any recorded result can be attributed to an exact prompt text.
+
+### Why a hash and not a version number
+
+The identity is *derived* from the text, so editing a prompt cannot silently keep its old id. There is no convention to remember and no way to get it wrong:
+
+```bash
+python -c "import prompts; print(prompts.get('chat_system').id)"
+# chat_system@730d676a910d
+#   ... edit prompts/chat_system.md ...
+# chat_system@afe621f87984      <- new text, new id, automatically
+#   ... revert the edit ...
+# chat_system@730d676a910d      <- same text, same id again
+```
+
+The trade is that old prompt text lives in git history rather than on disk. The id identifies it unambiguously; recovering the wording means looking in git.
+
+### Adding a prompt
+
+Drop a `.md` file in `prompts/` and call it. There is no registry to update:
+
+```python
+import prompts
+p = prompts.get("my_new_prompt")
+p.text, p.id
+```
+
+Placeholders are `$name` (`string.Template`), not `{name}` — these prompts discuss JSON, and brace syntax would collide. A literal `$` must be written `$$`. A placeholder with no value raises `KeyError` rather than being sent unrendered.
+
+`classify_ticket.md` uses this to receive the allowed enum values from `classification.py`, so the prompt and the JSON schema cannot disagree about what is classifiable. Because the digest covers the rendered text, changing an enum changes the prompt id too — which is correct, since the model genuinely saw something different.
+
+
 ## Logs
 
 `tracing.py` writes one JSON line per LLM call to stdout, on the `llm.trace` logger:
 
 ```json
-{"event": "llm_call", "model": "llama3.2", "input_tokens": 35, "output_tokens": 5, "ttft_ms": 549, "latency_ms": 647, "finish_reason": "stop", "error": null}
+{"event": "llm_call", "model": "llama3.2", "prompt_id": "chat_system@730d676a910d", "input_tokens": 35, "output_tokens": 5, "ttft_ms": 549, "latency_ms": 647, "finish_reason": "stop", "error": null}
 ```
 
 Each line is bare JSON with no `INFO:` prefix, so it pipes straight into `jq`:
