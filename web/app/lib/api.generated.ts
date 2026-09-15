@@ -68,6 +68,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/documents/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Document
+         * @description The source document behind a retrieved passage, as it is on disk now.
+         *
+         *     Serves only documents the index knows, which is what makes the path safe:
+         *     it has to already be a row in `doc_chunks`. A document that is indexed but
+         *     has since been deleted comes back with `text: null` and `on_disk: false`
+         *     rather than as an error - the caller can say what happened, which a 404
+         *     would not let it distinguish from a path it made up.
+         */
+        get: operations["get_document_documents__path__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/retrieval/config": {
         parameters: {
             query?: never;
@@ -160,6 +186,22 @@ export interface components {
         ClassifyRequest: {
             /** Text */
             text: string;
+        };
+        /**
+         * Document
+         * @description A source document, as it is on disk now.
+         */
+        Document: {
+            /** Chunk Count */
+            chunk_count: number;
+            /** Indexed At */
+            indexed_at: string | null;
+            /** On Disk */
+            on_disk: boolean;
+            /** Path */
+            path: string;
+            /** Text */
+            text: string | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -376,6 +418,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ClassificationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_document_documents__path__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Document"];
                 };
             };
             /** @description Validation Error */

@@ -1,5 +1,40 @@
+import { createElement } from "react";
 import ReactMarkdown from "react-markdown";
 import { cn } from "@/lib/utils";
+
+/** Which side of the markdown line the content falls on.
+ *
+ *  "prose"    what the model wrote for a human. Blockquotes are disabled and
+ *             a leading `>` is escaped, because a citation heading path that
+ *             lands at the start of a line would otherwise be eaten.
+ *
+ *  "document" a source document, shown so it can be read and judged. It is
+ *             neither model prose nor a record of what the system did - it is
+ *             the material itself, authored for a human to read, so it is
+ *             rendered. A blockquote in it is a real blockquote and stays
+ *             one, and nothing is escaped: escaping would shift every
+ *             character offset and the passage highlight is anchored to
+ *             those offsets. */
+export type MarkdownVariant = "prose" | "document";
+
+/** A character range in the SOURCE markdown, used to mark a passage. */
+export type Highlight = { start: number; end: number };
+
+/** What react-markdown hands a component override. `node.position` carries the
+ *  offsets in the original source, which is what makes the highlight possible
+ *  without touching the source text. */
+type MarkedProps = {
+  node?: { position?: { start?: { offset?: number }; end?: { offset?: number } } };
+  className?: string;
+  children?: React.ReactNode;
+};
+
+/** Block-level tags whose source range is compared against the highlight.
+ *  Anything not listed renders normally and is simply never marked. */
+const BLOCK_TAGS = [
+  "p", "h1", "h2", "h3", "h4", "h5", "h6",
+  "pre", "ul", "ol", "table", "blockquote", "hr",
+] as const;
 
 /** Renders prose the model wrote for a human.
  *
@@ -58,10 +93,56 @@ function keepLeadingAngleBrackets(markdown: string): string {
 export default function Markdown({
   children,
   className,
+  variant = "prose",
+  highlight,
 }: {
   children: string;
   className?: string;
+  variant?: MarkdownVariant;
+  highlight?: Highlight | null;
 }) {
+  const isDocument = variant === "document";
+
+  /** Highlighting inside rendered markdown, without splitting the source.
+   *
+   *  The passage is a range of the raw markdown, but after rendering that text
+   *  is spread across elements and its syntax is gone, so it cannot be found
+   *  in the output. Splitting the source into before/passage/after and
+   *  rendering three documents would break any construct the boundary fell
+   *  inside - a passage starting mid-list, or a fence split in half.
+   *
+   *  Instead the document is parsed once, as one document, and react-markdown
+   *  hands each element the source offsets it came from. A block is marked
+   *  when its range overlaps the passage. Marking is therefore block-granular:
+   *  the highlight covers whole paragraphs and code blocks rather than a
+   *  character range, which is also the honest unit - a passage is a run of
+   *  blocks, not a substring of prose. */
+  const components = highlight
+    ? Object.fromEntries(
+        BLOCK_TAGS.map((tag) => [
+          tag,
+          function Marked({ node, ...props }: MarkedProps) {
+            const position = node?.position;
+            const start = position?.start?.offset;
+            const end = position?.end?.offset;
+            const marked =
+              typeof start === "number" &&
+              typeof end === "number" &&
+              start < highlight.end &&
+              end > highlight.start;
+            return createElement(tag, {
+              ...props,
+              ...(marked ? { "data-passage": "true" } : {}),
+              className: cn(
+                props.className,
+                marked && "rounded bg-primary/10 px-2 -mx-2 ring-1 ring-primary/25",
+              ),
+            });
+          },
+        ]),
+      )
+    : undefined;
+
   return (
     <div
       className={cn(
@@ -82,11 +163,17 @@ export default function Markdown({
         "[&_table]:block [&_table]:overflow-x-auto [&_table]:text-sm",
         "[&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_th]:text-left",
         "[&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1",
+        isDocument &&
+          "[&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground",
         className,
       )}
     >
-      <ReactMarkdown disallowedElements={["blockquote"]} unwrapDisallowed>
-        {keepLeadingAngleBrackets(children)}
+      <ReactMarkdown
+        disallowedElements={isDocument ? undefined : ["blockquote"]}
+        unwrapDisallowed={!isDocument}
+        components={components}
+      >
+        {isDocument ? children : keepLeadingAngleBrackets(children)}
       </ReactMarkdown>
     </div>
   );

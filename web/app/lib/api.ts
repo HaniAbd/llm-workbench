@@ -20,6 +20,7 @@ export type TraceEvent = Schemas["TraceEvent"];
 export type Retrieved = Schemas["RetrievedPassage"];
 export type SentMessage = Schemas["SentMessage"];
 export type Source = Schemas["Source"];
+export type SourceDocument = Required<Schemas["Document"]>;
 // `Required` is shallow, so the nested trace is restated to pick up the same
 // treatment rather than arriving half-optional.
 export type AskResult = Required<Omit<Schemas["AskResponse"], "trace">> & {

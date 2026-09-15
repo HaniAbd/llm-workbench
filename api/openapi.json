@@ -144,6 +144,55 @@
         "title": "ClassifyRequest",
         "type": "object"
       },
+      "Document": {
+        "description": "A source document, as it is on disk now.",
+        "properties": {
+          "chunk_count": {
+            "title": "Chunk Count",
+            "type": "integer"
+          },
+          "indexed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indexed At"
+          },
+          "on_disk": {
+            "title": "On Disk",
+            "type": "boolean"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "required": [
+          "path",
+          "text",
+          "on_disk",
+          "indexed_at",
+          "chunk_count"
+        ],
+        "title": "Document",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -563,6 +612,46 @@
           }
         },
         "summary": "Classify Ticket"
+      }
+    },
+    "/documents/{path}": {
+      "get": {
+        "description": "The source document behind a retrieved passage, as it is on disk now.\n\nServes only documents the index knows, which is what makes the path safe:\nit has to already be a row in `doc_chunks`. A document that is indexed but\nhas since been deleted comes back with `text: null` and `on_disk: false`\nrather than as an error - the caller can say what happened, which a 404\nwould not let it distinguish from a path it made up.",
+        "operationId": "get_document_documents__path__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Document"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Document"
       }
     },
     "/retrieval/config": {

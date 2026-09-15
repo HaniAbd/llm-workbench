@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field, StringConstraints, model_validator
 import prompts
 import store
 from answering import Answer, AnsweringError, answer_question, retrieval_config
+from documents import Document, load_document
 from classification import ClassificationError, ClassificationResult, classify
 from tracing import TraceDocument, chat_span
 
@@ -266,3 +267,27 @@ def retrieval_configuration():
             "indexed_at": index["indexed_at"].isoformat() if index["indexed_at"] else None,
         },
     }
+
+
+@app.get("/documents/{path:path}", response_model=Document)
+def get_document(path: str):
+    """The source document behind a retrieved passage, as it is on disk now.
+
+    Serves only documents the index knows, which is what makes the path safe:
+    it has to already be a row in `doc_chunks`. A document that is indexed but
+    has since been deleted comes back with `text: null` and `on_disk: false`
+    rather than as an error - the caller can say what happened, which a 404
+    would not let it distinguish from a path it made up.
+    """
+    try:
+        with store.connect() as conn:
+            document = load_document(conn, path)
+    except OperationalError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=_failure(None, "document index unavailable - is Postgres running?"),
+        ) from exc
+
+    if document is None:
+        raise HTTPException(status_code=404, detail=f"no indexed document at {path!r}")
+    return document

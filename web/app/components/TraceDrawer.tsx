@@ -5,6 +5,7 @@ import { Activity, X } from "lucide-react";
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import type { Trace } from "../lib/api";
+import DocumentView from "./DocumentView";
 import TraceBody from "./TraceBody";
 
 /** One drawer for the whole app, opened from anywhere.
@@ -18,7 +19,14 @@ import TraceBody from "./TraceBody";
  *  focus handling, Escape and scroll locking come from it rather than from me.
  *  shadcn's own sheet would have pulled in radix-ui, a second primitive
  *  library beside the one already here. */
-type Open = { id: string; label: string; trace: Trace } | null;
+/** The drawer shows one of two things. A trace is a record of a call; a
+ *  document is the source behind one retrieved passage. They share the drawer
+ *  because they answer the same question from opposite ends - what happened,
+ *  and what it was drawn from. */
+type Open =
+  | { kind: "trace"; id: string; label: string; trace: Trace }
+  | { kind: "document"; id: string; label: string; path: string; passage: string; headingPath: string }
+  | null;
 
 const TraceContext = createContext<{
   open: Open;
@@ -47,7 +55,7 @@ export function TraceProvider({ children }: { children: ReactNode }) {
             <div className="flex items-start gap-3 border-b border-border px-5 py-4">
               <div className="min-w-0 flex-1">
                 <Dialog.Title className="text-sm font-medium text-foreground">
-                  Trace
+                  {open?.kind === "document" ? "Source document" : "Trace"}
                 </Dialog.Title>
                 {/* Which call this belongs to, spelled out rather than implied
                     by whatever happens to be behind the overlay. */}
@@ -64,7 +72,15 @@ export function TraceProvider({ children }: { children: ReactNode }) {
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
-              {open && <TraceBody trace={open.trace} />}
+              {open?.kind === "trace" && <TraceBody trace={open.trace} />}
+              {open?.kind === "document" && (
+                <DocumentView
+                  key={`${open.path}:${open.id}`}
+                  path={open.path}
+                  passage={open.passage}
+                  headingPath={open.headingPath}
+                />
+              )}
             </div>
           </Dialog.Popup>
         </Dialog.Portal>
@@ -91,7 +107,7 @@ export function TraceTrigger({
   return (
     <button
       type="button"
-      onClick={() => setOpen(isOpen ? null : { id, label, trace })}
+      onClick={() => setOpen(isOpen ? null : { kind: "trace", id, label, trace })}
       aria-expanded={isOpen}
       className={cn(
         "group inline-flex w-fit items-center gap-2 rounded-lg border px-2.5 py-1.5",
@@ -124,4 +140,25 @@ export function TraceTrigger({
       </span>
     </button>
   );
+}
+
+/** Opens the source document behind one retrieved passage.
+ *
+ *  Presentation only: the sources list stays exactly what it was, the record
+ *  of what retrieval supplied. Opening one adds a way to read around it and
+ *  takes nothing away from that claim - which is why the row still shows its
+ *  own score and heading path, and why the drawer labels what it shows as the
+ *  source document rather than as the answer's evidence. */
+export function useOpenDocument() {
+  const { open, setOpen } = useContext(TraceContext);
+  return {
+    openDocument: (args: {
+      id: string;
+      label: string;
+      path: string;
+      passage: string;
+      headingPath: string;
+    }) => setOpen({ kind: "document", ...args }),
+    openId: open?.kind === "document" ? open.id : null,
+  };
 }

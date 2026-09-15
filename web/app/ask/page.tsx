@@ -13,7 +13,7 @@ import Composer from "../components/Composer";
 import { Label, Notice } from "../components/Notice";
 import Markdown from "../components/Markdown";
 import { isBelowFloor, useSimilarityFloor } from "../components/RetrievalConfig";
-import { TraceTrigger } from "../components/TraceDrawer";
+import { TraceTrigger, useOpenDocument } from "../components/TraceDrawer";
 import { API_BASE, type AskResult, type Trace } from "../lib/api";
 
 type Outcome =
@@ -46,6 +46,7 @@ export default function AskPage() {
   // The floor comes from the API that enforces it, not from a number kept
   // here. See components/RetrievalConfig.tsx.
   const { floor } = useSimilarityFloor();
+  const { openDocument, openId } = useOpenDocument();
   const [question, setQuestion] = useState("");
   const [asked, setAsked] = useState("");
   const [outcome, setOutcome] = useState<Outcome | null>(null);
@@ -237,8 +238,33 @@ export default function AskPage() {
                         </div>
                         {sources.map((s, i) => {
                           const isQuoted = quotedIn(answer, s.heading_path);
+                          // The passage text lives on the trace, not on the
+                          // source row; they are the same passages in the same
+                          // order, so the row's index locates it.
+                          const passage = trace.retrieved?.[i]?.text;
+                          const rowId = `src-${i}`;
+                          const isOpen = openId === rowId;
                           return (
-                            <div key={i} className="flex items-center gap-2.5">
+                            <button
+                              key={i}
+                              type="button"
+                              disabled={!passage}
+                              onClick={() =>
+                                passage &&
+                                openDocument({
+                                  id: rowId,
+                                  label: s.heading_path,
+                                  path: s.source,
+                                  passage,
+                                  headingPath: s.heading_path,
+                                })
+                              }
+                              className={cn(
+                                "-mx-1.5 flex w-full items-center gap-2.5 rounded-md px-1.5 py-1 text-left transition-colors",
+                                isOpen ? "bg-ok/10" : "enabled:hover:bg-ok/[0.07]",
+                                "disabled:cursor-default",
+                              )}
+                            >
                               <span
                                 className={cn(
                                   "w-12 shrink-0 font-mono text-xs",
@@ -277,14 +303,23 @@ export default function AskPage() {
                               <span className="truncate font-mono text-[11px] text-muted-foreground">
                                 {s.heading_path}
                               </span>
-                            </div>
+                              <span
+                                className={cn(
+                                  "ml-auto shrink-0 text-[10px] transition-colors",
+                                  isOpen ? "text-ok" : "text-muted-foreground/50",
+                                )}
+                              >
+                                {isOpen ? "open" : "read"}
+                              </span>
+                            </button>
                           );
                         })}
                         <p className="pt-1 text-[11px] leading-relaxed text-muted-foreground/80">
                           This is what retrieval actually supplied, whatever the
                           answer claims. A tick means the exact path appears in the
                           answer text; a passage can still have been used without
-                          being quoted.
+                          being quoted. Select one to read the document it came
+                          from, with the passage marked.
                           {floor === null
                             ? " The API's similarity floor could not be read, so scores are shown without a verdict."
                             : ` Scores are judged against the API's floor of ${floor}.`}
