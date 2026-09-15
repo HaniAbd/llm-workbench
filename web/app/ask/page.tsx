@@ -11,6 +11,27 @@ type Outcome =
   | { kind: "failed"; message: string; trace: Trace | null } // 502
   | { kind: "unreachable"; message: string };
 
+/** Below this, the best passage is treated as a weak match rather than an
+ *  answer. Measured on this corpus: questions the docs actually cover score
+ *  0.62-0.72, while "Name one sea" scores 0.466-0.478. 0.55 sits in the gap.
+ *  The score is always shown, so the threshold is a hint and not a verdict. */
+const WEAK_MATCH_BELOW = 0.55;
+
+/** Does the answer quote this exact heading path?
+ *
+ *  A substring test against a known string, deliberately: heading paths
+ *  themselves contain backticks (`api/README.md > api > \`POST /ask\` > ...`),
+ *  so pulling citation-shaped text back out of the prose is unreliable.
+ *  Searching for paths we already know is not. */
+function quotedIn(answer: string, headingPath: string): boolean {
+  return answer.includes(headingPath);
+}
+
+/** The answer appears to cite something - a file path or a heading chain. */
+function looksLikeACitation(answer: string): boolean {
+  return answer.includes(".md") || answer.includes(" > ");
+}
+
 const EXAMPLES = [
   "Why is the eval suite not run in CI?",
   "How are prompts identified?",
@@ -116,8 +137,14 @@ export default function AskPage() {
 
         {outcome?.kind === "no-index" && (
           <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-400">
-            <strong className="font-medium">No document index (503).</strong>{" "}
+            <strong className="font-medium">
+              Document index unreachable (503).
+            </strong>{" "}
             {outcome.message}
+            <div className="mt-1 text-xs opacity-80">
+              This is a retrieval failure, not a bad answer — no passages could
+              be looked up at all, so nothing was asked of the model.
+            </div>
           </div>
         )}
 
@@ -138,33 +165,105 @@ export default function AskPage() {
           </div>
         )}
 
-        {outcome?.kind === "ok" && (
-          <div className="flex flex-col gap-3">
-            <p className="whitespace-pre-wrap leading-7 text-black dark:text-zinc-100">
-              {outcome.result.answer}
-            </p>
+        {outcome?.kind === "ok" && (() => {
+          const { answer, sources, trace } = outcome.result;
+          const best = sources.length ? Math.max(...sources.map((s) => s.score)) : 0;
+          const weak = sources.length === 0 || best < WEAK_MATCH_BELOW;
+          const quoted = sources.filter((s) => quotedIn(answer, s.heading_path));
+          const citesNothingReal = looksLikeACitation(answer) && quoted.length === 0;
 
-            <div className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                sources given to the model ({outcome.result.sources.length})
-              </span>
-              {/* The authoritative list: what retrieval actually supplied,
-                  rather than whatever the answer text claims to have used. */}
-              {outcome.result.sources.map((s, i) => (
-                <div key={i} className="flex items-baseline gap-2 text-xs">
-                  <span className="font-mono text-zinc-500 dark:text-zinc-400">
-                    {s.score.toFixed(3)}
-                  </span>
-                  <span className="truncate font-mono text-zinc-800 dark:text-zinc-200">
-                    {s.heading_path}
-                  </span>
+          return (
+            <div className="flex flex-col gap-3">
+              {sources.length === 0 && (
+                <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-400">
+                  <strong className="font-medium">Nothing retrieved.</strong> The
+                  index returned no passages — it is probably empty. Run{" "}
+                  <code className="font-mono">python index_docs.py</code> in{" "}
+                  <code className="font-mono">api/</code>.
                 </div>
-              ))}
-            </div>
+              )}
 
-            <TracePanel trace={outcome.result.trace} />
-          </div>
-        )}
+              {weak && sources.length > 0 && (
+                <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-400">
+                  <strong className="font-medium">Weak match.</strong> The best
+                  passage scored{" "}
+                  <span className="font-mono">{best.toFixed(3)}</span>, below{" "}
+                  <span className="font-mono">{WEAK_MATCH_BELOW}</span>. Retrieval
+                  always returns four passages whether or not any is relevant, so
+                  the answer below may be built from unrelated text.
+                </div>
+              )}
+
+              <div className="flex flex-col gap-1">
+                <span className="text-[10px] uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                  answer — the model&apos;s words, which may misquote or
+                  abbreviate a source
+                </span>
+                <p className="whitespace-pre-wrap leading-7 text-black dark:text-zinc-100">
+                  {answer}
+                </p>
+              </div>
+
+              {citesNothingReal && (
+                <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-400">
+                  <strong className="font-medium">Unreliable citation.</strong> The
+                  answer cites a source, but none of the retrieved passages below
+                  appears in it verbatim — the model has abbreviated or invented
+                  the reference. Use the list below instead.
+                </div>
+              )}
+
+              <div className="flex flex-col gap-1">
+                <span className="text-[10px] uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                  retrieved — authoritative: what the model was actually given (
+                  {sources.length})
+                </span>
+                {sources.map((s, i) => {
+                  const isQuoted = quotedIn(answer, s.heading_path);
+                  return (
+                    <div key={i} className="flex items-baseline gap-2 text-xs">
+                      <span
+                        className={
+                          s.score < WEAK_MATCH_BELOW
+                            ? "font-mono text-amber-700 dark:text-amber-500"
+                            : "font-mono text-zinc-600 dark:text-zinc-400"
+                        }
+                      >
+                        {s.score.toFixed(3)}
+                      </span>
+                      <span className="h-1 w-16 shrink-0 overflow-hidden rounded bg-black/[.08] dark:bg-white/[.145]">
+                        <span
+                          className="block h-full bg-zinc-500 dark:bg-zinc-400"
+                          style={{ width: `${Math.max(0, Math.min(1, s.score)) * 100}%` }}
+                        />
+                      </span>
+                      <span
+                        title={isQuoted ? "quoted verbatim in the answer" : undefined}
+                        className={
+                          isQuoted
+                            ? "w-12 shrink-0 text-[10px] uppercase tracking-wide text-zinc-600 dark:text-zinc-300"
+                            : "w-12 shrink-0"
+                        }
+                      >
+                        {isQuoted ? "quoted" : ""}
+                      </span>
+                      <span className="truncate font-mono text-zinc-800 dark:text-zinc-200">
+                        {s.heading_path}
+                      </span>
+                    </div>
+                  );
+                })}
+                <span className="mt-1 text-[10px] text-zinc-500 dark:text-zinc-400">
+                  &ldquo;quoted&rdquo; means this exact path appears in the answer
+                  text. A passage can still have been used without being quoted.
+                </span>
+              </div>
+
+              <TracePanel trace={trace} />
+            </div>
+          );
+        })()}
+
       </main>
     </div>
   );
