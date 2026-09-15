@@ -103,6 +103,8 @@ Forbidden-claim matching is word-boundary (`MIT` occurs inside "limit"), contrac
 
 `evals/harness.py` is shared with the classifier suite: run records, reference pinning, comparison and the miss buckets. Each suite keeps its own history and reference.
 
+A run is stored in two places. `*_runs.jsonl` holds scores, digests, configuration and per-case **metrics** — small, permanent, **tracked**. `*_runs_detail/` holds the bulky per-case detail for the most recent 5 runs only and is **gitignored**. The split works because a baseline is only ever read through its metrics and case ids; detail is read from the current run alone. Read a kept run's detail with `--detail [RUN_ID]`; an older one says so rather than failing silently.
+
 The `/ask` prompt is rendered with its passages, so the API's `prompt_id` differs per question; the suite records the **template** digest (`…~template`) to attribute a run.
 
 A retrieval run also records `retrieval_digest` (the knobs) and `index_digest` (the corpus searched), read from `GET /retrieval/config` on the **running server** rather than from disk, since a file can be ahead of a server that has not restarted. Both are **flagged, not refused**: `scorer_digest` refuses because a changed scorer means the numbers are a different kind of measurement, whereas retrieval configuration is the thing *being* measured — comparing `k=4` with `k=6` is the point. They flag separately because a re-index moves one without the other. A run predating this reads as `not recorded`, never as "the same".

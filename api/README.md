@@ -217,6 +217,28 @@ by field                      by group
   sentiment         0.955
 ```
 
+#### Where a run is kept
+
+Two files per suite, for two different lifetimes:
+
+| | Contents | Size | Tracked |
+| --- | --- | --- | --- |
+| `runs.jsonl` / `retrieval_runs.jsonl` | scores, digests, configuration, per-case **metrics** | ~3-6KB per run | **yes** - this is the history |
+| `runs_detail/` / `retrieval_runs_detail/` | per-case **detail**: observed values, answer excerpts, which passages matched | ~5-10KB per run | no, gitignored |
+
+The split is drawn where it is because of what a comparison needs. A baseline run is only ever read through its per-case metrics and its set of case ids - the observed values and answer excerpts are read from the *current* run alone. So the history can be slimmed without any comparison losing information, and migrating the existing records changed no score, digest or metric.
+
+Detail is kept for the most recent `KEEP_DETAIL_FOR` runs (5) and pruned on the next run. Read it with:
+
+```bash
+python evals/run_retrieval.py --detail            # the most recent run
+python evals/run_retrieval.py --detail 30ff85d1   # a specific run
+```
+
+An older run answers honestly rather than silently: the history still knows its scores, nothing knows its excerpts any more, and the command says which runs still have detail.
+
+`migrate_detail.py` performed the one-off split of the existing records. It is idempotent and safe to re-run.
+
 #### Two suites, one harness
 
 `evals/harness.py` holds what both suites need — recording a run, pinning a reference, comparing two runs, sorting misses into buckets. `run.py` scores the classifier, `run_retrieval.py` scores retrieval. They measure different things but keep a measurement the same way, and each has its own history and reference (`runs.jsonl` / `retrieval_runs.jsonl`).

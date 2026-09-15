@@ -212,6 +212,8 @@ def main() -> int:
 
     if args.history:
         return harness.show_history(STORE)
+    if args.detail is not None:
+        return harness.show_detail(STORE, args.detail or None)
     if args.clear_baseline:
         return STORE.clear_reference()
     if args.set_baseline is not None:

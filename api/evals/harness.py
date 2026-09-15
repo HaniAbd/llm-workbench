@@ -62,21 +62,83 @@ def mean(xs):
 
 # --- persistence ------------------------------------------------------------
 
+# Per-case keys that belong to the permanent history. Everything else on a
+# case is detail: large, and only of interest while working on the run that
+# produced it.
+#
+# The split is drawn here and not elsewhere because comparison needs exactly
+# these. A baseline run is only ever read through `metrics_of()` and its set
+# of case ids; the observed values and answer excerpts are read from the
+# current run alone. So the history can be slimmed without any comparison
+# losing information.
+CASE_HISTORY_KEYS = ("group", "metrics", "fields", "score")
+
+# How many runs keep their detail on disk. Older detail is pruned on the next
+# run: it is not in the repository, so losing it costs nothing that the
+# history does not already hold.
+KEEP_DETAIL_FOR = 5
+
+
 class Store:
-    """Where one suite keeps its runs and its pinned reference."""
+    """Where one suite keeps its runs and its pinned reference.
+
+    Two files, for two different lifetimes. `runs.jsonl` holds scores,
+    digests and per-case metrics - small, permanent, in the repository.
+    The detail directory beside it holds the bulky per-case record for the
+    most recent runs only, and is not tracked.
+    """
 
     def __init__(self, runs_path: Path, ref_path: Path):
         self.runs_path = runs_path
         self.ref_path = ref_path
+        self.details_dir = runs_path.parent / f"{runs_path.stem}_detail"
 
     def load_runs(self) -> list:
         if not self.runs_path.exists():
             return []
         return [json.loads(l) for l in self.runs_path.read_text().splitlines() if l.strip()]
 
+    @staticmethod
+    def split_record(run: dict) -> tuple[dict, dict]:
+        """(history, detail). The history keeps everything except the bulky
+        half of each case; the detail keeps only that half."""
+        slim_cases, detail_cases = {}, {}
+        for cid, case in run.get("cases", {}).items():
+            slim_cases[cid] = {k: v for k, v in case.items() if k in CASE_HISTORY_KEYS}
+            rest = {k: v for k, v in case.items() if k not in CASE_HISTORY_KEYS}
+            if rest:
+                detail_cases[cid] = rest
+        history = {**run, "cases": slim_cases}
+        return history, {"run_id": run_id_of(run), "at": run["at"], "cases": detail_cases}
+
+    def detail_path(self, run_id: str) -> Path:
+        return self.details_dir / f"{run_id}.json"
+
+    def read_detail(self, run_id: str) -> dict | None:
+        path = self.detail_path(run_id)
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def prune_details(self, keep: int = KEEP_DETAIL_FOR) -> int:
+        """Drop detail for all but the most recent `keep` runs."""
+        if not self.details_dir.exists():
+            return 0
+        recent = {run_id_of(r) for r in self.load_runs()[-keep:]}
+        removed = 0
+        for path in self.details_dir.glob("*.json"):
+            if path.stem not in recent:
+                path.unlink()
+                removed += 1
+        return removed
+
     def append(self, run: dict) -> None:
+        history, detail = self.split_record(run)
         with self.runs_path.open("a") as fh:
-            fh.write(json.dumps(run) + "\n")
+            fh.write(json.dumps(history) + "\n")
+        if detail["cases"]:
+            self.details_dir.mkdir(exist_ok=True)
+            self.detail_path(detail["run_id"]).write_text(
+                json.dumps(detail, indent=1) + "\n")
+        self.prune_details()
 
     def load_reference(self) -> dict | None:
         if not self.ref_path.exists():
@@ -287,6 +349,49 @@ def show_history(store: Store) -> int:
     return 0
 
 
+def show_detail(store: Store, run_id: str | None) -> int:
+    """Print the per-case detail of a run, if it is still on disk.
+
+    Detail is kept for the most recent runs only and is not in the repository,
+    so an older run answers with what it has: the history knows the scores,
+    nothing knows the excerpts any more.
+    """
+    runs = store.load_runs()
+    if not runs:
+        print("no runs yet")
+        return 0
+    if run_id:
+        matches = [r for r in runs if run_id_of(r).startswith(run_id)]
+        if not matches:
+            print(f"no run matching {run_id!r} (see --history)")
+            return 2
+        target = matches[-1]
+    else:
+        target = runs[-1]
+
+    rid = run_id_of(target)
+    detail = store.read_detail(rid)
+    print(f"run {rid}  {target['at']}  {fmt_scores(scores_of(target))}")
+    if detail is None:
+        kept = sorted(p.stem for p in store.details_dir.glob("*.json")) \
+            if store.details_dir.exists() else []
+        print(f"\n  no detail on disk for this run.")
+        print(f"  detail is kept for the most recent {KEEP_DETAIL_FOR} runs"
+              f" and is not tracked in git.")
+        print(f"  still available: {', '.join(kept) or 'none'}")
+        return 1
+
+    for cid, case in detail["cases"].items():
+        metrics = metrics_of(target["cases"].get(cid, {}))
+        shown = "  ".join(f"{k}={v}" for k, v in metrics.items())
+        print(f"\n  {cid}   {shown}")
+        for key, value in case.items():
+            if isinstance(value, dict):
+                value = "  ".join(f"{k}={v!r}" for k, v in value.items())
+            print(f"     {key}: {str(value)[:300]}")
+    return 0
+
+
 def add_common_args(ap) -> None:
     ap.add_argument("--api", default="http://localhost:8000")
     ap.add_argument("--history", action="store_true", help="list past runs and exit")
@@ -295,3 +400,5 @@ def add_common_args(ap) -> None:
                     help="pin a run as the reference (default: the most recent) and exit")
     ap.add_argument("--clear-baseline", action="store_true",
                     help="unpin the reference and exit")
+    ap.add_argument("--detail", nargs="?", const="", metavar="RUN_ID",
+                    help="show a run's per-case detail (default: the most recent) and exit")

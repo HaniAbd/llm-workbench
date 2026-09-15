@@ -166,3 +166,9 @@ venv/
 /data/
 *.db
 *.sqlite3
+
+# ---- Eval run detail ----
+# Per-case detail from an eval run: large, and only of interest while working
+# on the run that produced it. The scores, digests and per-case metrics that
+# make runs comparable stay in api/evals/*_runs.jsonl, which IS tracked.
+api/evals/*_detail/
