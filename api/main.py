@@ -11,7 +11,8 @@ from psycopg import OperationalError
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 import prompts
-from answering import Answer, AnsweringError, answer_question
+import store
+from answering import Answer, AnsweringError, answer_question, retrieval_config
 from classification import ClassificationError, ClassificationResult, classify
 from tracing import chat_span
 
@@ -228,3 +229,34 @@ def ask(req: AskRequest):
         ) from exc
 
     return AskResponse(**result.model_dump(), trace=captured.trace())
+
+
+@app.get("/retrieval/config")
+def retrieval_configuration():
+    """How retrieval is configured, and what it is searching.
+
+    Reported by the running process rather than read off disk, because the
+    eval scores whatever this server actually did. A file on disk can be ahead
+    of a server that has not restarted, and a configuration record that is
+    quietly wrong is worse than none - it looks covered.
+
+    `config` is collected by introspection, so a knob added to `answering` or
+    `embeddings` appears here without this endpoint being touched.
+    `index` describes the corpus that was searched, which moves independently
+    of the knobs: re-indexing edited documents changes results without any
+    setting changing.
+    """
+    try:
+        with store.connect() as conn:
+            index = store.stats(conn)
+    except OperationalError:
+        index = None
+    return {
+        "config": retrieval_config(),
+        "index": None if index is None else {
+            "chunks": index["chunks"],
+            "documents": index["documents"],
+            "models": index["models"],
+            "indexed_at": index["indexed_at"].isoformat() if index["indexed_at"] else None,
+        },
+    }

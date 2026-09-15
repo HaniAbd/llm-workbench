@@ -105,6 +105,10 @@ Forbidden-claim matching is word-boundary (`MIT` occurs inside "limit"), contrac
 
 The `/ask` prompt is rendered with its passages, so the API's `prompt_id` differs per question; the suite records the **template** digest (`…~template`) to attribute a run.
 
+A retrieval run also records `retrieval_digest` (the knobs) and `index_digest` (the corpus searched), read from `GET /retrieval/config` on the **running server** rather than from disk, since a file can be ahead of a server that has not restarted. Both are **flagged, not refused**: `scorer_digest` refuses because a changed scorer means the numbers are a different kind of measurement, whereas retrieval configuration is the thing *being* measured — comparing `k=4` with `k=6` is the point. They flag separately because a re-index moves one without the other. A run predating this reads as `not recorded`, never as "the same".
+
+Knobs are collected by introspection over module constants in `answering` and `embeddings`, so adding one needs no edit — a hand-maintained list is exactly the gap that looks covered.
+
 #### Development traces
 
 Both endpoints return a `trace` beside their normal output — a field on `/classify`, a `trace` SSE event after the last token on `/chat` (so it cannot delay streaming). It is a **superset of the `llm_call` log line**: the log stays scalar and greppable, the trace adds `messages_sent`, `raw_output`, and an ordered `events` list.

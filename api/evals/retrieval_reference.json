@@ -1,11 +1,11 @@
 {
-  "run_id": "aa1cf90a",
-  "at": "2026-09-15T11:55:53+00:00",
+  "run_id": "30ff85d1",
+  "at": "2026-09-15T12:09:52+00:00",
   "prompt_id": "answer_question@99b1ad85ce06~template",
   "scores": {
     "retrieval": 0.6905,
     "answer": 0.7903
   },
   "scorer_digest": "2cab6eef87b8",
-  "pinned_at": "2026-09-15T11:58:28+00:00"
+  "pinned_at": "2026-09-15T12:10:03+00:00"
 }

@@ -196,14 +196,30 @@ def fmt_scores(scores: dict) -> str:
     )
 
 
-def compare(run: dict, other: dict, heading: str, subset=None) -> None:
-    """One comparison against another run, over the cases they share."""
+def compare(run: dict, other: dict, heading: str, subset=None, flags=()) -> None:
+    """One comparison against another run, over the cases they share.
+
+    `flags` names record fields whose difference should be called out rather
+    than refused. A refusal is right when the numbers stop meaning the same
+    thing - that is what `scorer_digest` does. A flag is right when the two
+    runs are honest measurements of two different systems, which is the
+    comparison you actually want: a changed prompt, or a changed retrieval
+    configuration.
+    """
     shared = sorted(set(run["cases"]) & set(other["cases"]))
     print(f"\n{heading}  {run_id_of(other)}  {other['at']}  ({len(shared)} shared cases)")
     if other.get("prompt_id") != run.get("prompt_id"):
         print(f"  ACROSS PROMPTS  {other.get('prompt_id')} -> {run.get('prompt_id')}")
     else:
         print(f"  same prompt ({run.get('prompt_id')}) - differences are model noise")
+    for field, label in flags:
+        mine, theirs = run.get(field), other.get(field)
+        if mine != theirs:
+            # A run recorded before the field existed reads as "not recorded",
+            # never as "the same" - otherwise the gap looks covered.
+            show = lambda v: "not recorded" if v is None else v
+            print(f"  {label.upper()} CHANGED  {show(theirs)} -> {show(mine)}")
+
     if subset:
         # Printing the other run's FULL score beside the recomputed figures is
         # what stops "1.000 vs 0.911" reading as an improvement when it is

@@ -433,6 +433,37 @@ Two rules the forbidden lists follow, both learned by getting them wrong:
 
 Contractions are expanded before matching, so a refusal marker needs one form rather than two — `doesn't provide` does not contain `not provide`.
 
+#### What makes two retrieval runs comparable
+
+Alongside `scorer_digest` and `dataset_digest`, a retrieval run records **how retrieval was configured** and **what it was searching**:
+
+```
+scorer 2cab6eef87b8   dataset 91452840add3   k=[4]
+retrieval 5e51e7428a6d   RETRIEVE_K=4  CANDIDATE_POOL=20  RESERVE_FOR_OTHER_SOURCES=1  MODEL=nomic-embed-text  DIM=768
+index dcf61d7200dc   59 chunks from 6 documents, indexed 2026-09-15T10:09:16+00:00
+```
+
+A difference is **flagged, never refused**:
+
+```
+vs REFERENCE (pinned)  30ff85d1  ...
+  RETRIEVAL CONFIG CHANGED  5e51e7428a6d -> ac1e8144f7ea
+```
+
+The distinction is deliberate. `scorer_digest` refuses, because a changed scorer means two numbers are no longer the same *kind* of measurement and comparing them is meaningless. Retrieval configuration is the opposite: it is the thing **being measured**. `k=4` against `k=6` are two honest measurements of two different systems, and comparing them is the entire purpose — refusing would make a retrieval experiment impossible to evaluate.
+
+`retrieval` and `index` are flagged separately because they move independently: re-indexing edited documents changes results with no knob touched, and a knob change affects results with the corpus untouched. Conflating them would mean one flag firing on every documentation edit until it was ignored.
+
+A run recorded before this existed reads as **`not recorded`**, never as "the same" — a gap that looks covered is the failure this guards against.
+
+##### Why the knobs are not listed by hand
+
+`retrieval_config()` in `answering.py` collects every module-level constant from `answering` and `embeddings` by introspection. Adding a knob needs no edit anywhere: define `SIMILARITY_FLOOR = 0.35` as a module constant and it appears in the next run record.
+
+It errs towards including too much — a constant that turns out not to affect retrieval causes a comparison to be flagged when nothing relevant moved. That is noisy but safe; the reverse is what this exists to prevent.
+
+The values come from `GET /retrieval/config` on the **running server**, not by importing the module. A file on disk can be ahead of a server that has not restarted, and a configuration record that is quietly wrong is worse than none.
+
 #### Attributing a retrieval run
 
 The `/ask` prompt is rendered with the retrieved passages, so the `prompt_id` the API returns **differs for every question** — it identifies the request, not the prompt. The suite therefore records the digest of the prompt *template*, before substitution, as `answer_question@…~template`, and counts the rendered variants as a sanity check.

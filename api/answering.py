@@ -12,6 +12,9 @@ answer keeps the two from arriving separately.
 
 from pydantic import BaseModel, ValidationError  # noqa: F401  (kept for parity)
 
+import sys
+
+import embeddings
 import prompts
 import store
 from embeddings import embed_one
@@ -26,6 +29,33 @@ RETRIEVE_K = 4
 # change in the answer score comes from which passages arrived, not how many.
 CANDIDATE_POOL = 20
 RESERVE_FOR_OTHER_SOURCES = 1
+
+
+def retrieval_config() -> dict:
+    """Every knob that shapes a retrieval result, collected rather than listed.
+
+    Introspection, not a hand-written list, because a hand-written list is the
+    failure this exists to prevent: a knob added and not added here would leave
+    a run record that *looks* like it captured the configuration while quietly
+    omitting the thing that changed.
+
+    The rule is "module-level constant" - any new UPPER_CASE scalar in this
+    module or in `embeddings` is picked up with no further work. It errs
+    towards including too much: a constant that turns out not to affect
+    retrieval causes a comparison to be flagged when nothing relevant moved,
+    which is noisy but safe. The reverse is not.
+    """
+    def constants(module, prefix):
+        return {
+            f"{prefix}.{name}": value
+            for name, value in vars(module).items()
+            if name.isupper()
+            and not name.startswith("_")
+            and isinstance(value, (int, float, str, bool))
+        }
+
+    return {**constants(sys.modules[__name__], "answering"),
+            **constants(embeddings, "embeddings")}
 
 
 class Source(BaseModel):

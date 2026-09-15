@@ -48,6 +48,10 @@ def prompt_template_id() -> str:
     return f"{PROMPT_PATH.stem}@{harness.digest(text)}~template"
 STORE = harness.Store(HERE / "retrieval_runs.jsonl", HERE / "retrieval_reference.json")
 
+# Differences here are reported, never grounds for refusing a comparison -
+# see harness.compare for why.
+FLAGS = (("retrieval_digest", "retrieval config"), ("index_digest", "index"))
+
 DATASET_DIGEST = harness.digest(
     [
         {"id": c["id"], "question": c["question"], "expect": c["expect"],
@@ -55,6 +59,23 @@ DATASET_DIGEST = harness.digest(
         for c in sorted(DATA["cases"], key=lambda c: c["id"])
     ]
 )
+
+
+def fetch_config(api: str) -> dict:
+    """How the server was configured, from the server.
+
+    Read here rather than by importing `answering`, because the eval scores
+    what this process actually did: a module on disk can be ahead of a server
+    that has not been restarted, and a config record that is quietly wrong is
+    worse than none.
+    """
+    try:
+        with urllib.request.urlopen(f"{api}/retrieval/config", timeout=30) as r:
+            return json.loads(r.read())
+    except Exception as exc:  # an older server has no such endpoint
+        print(f"  warning: could not read retrieval config ({type(exc).__name__});"
+              " this run will compare as 'not recorded'", file=sys.stderr)
+        return {}
 
 
 def call(api: str, question: str):
@@ -72,6 +93,8 @@ def call(api: str, question: str):
 
 def run_once(api: str, cases: list) -> dict:
     started = time.time()
+    server = fetch_config(api)
+    config, index = server.get("config"), server.get("index")
     results, prompt_ids, ks = {}, set(), set()
 
     for i, case in enumerate(cases, 1):
@@ -122,6 +145,12 @@ def run_once(api: str, cases: list) -> dict:
         "rendered_prompt_ids": len(prompt_ids),
         "scorer_digest": scoring.SCORER_DIGEST,
         "dataset_digest": DATASET_DIGEST,
+        # Flagged, not refused: a changed knob makes this a measurement of a
+        # different system, not a different kind of measurement.
+        "retrieval_config": config,
+        "retrieval_digest": harness.digest(config) if config else None,
+        "index_state": index,
+        "index_digest": harness.digest(index) if index else None,
         "case_count": len(results),
         "k_observed": sorted(ks),
         "elapsed_s": round(time.time() - started, 1),
@@ -158,6 +187,12 @@ def report(run, cases, reference, ref_why, previous, prev_why) -> int:
     print(f"run    {harness.run_id_of(run)}")
     print(f"prompt {run['prompt_id']}   ({run.get('rendered_prompt_ids', 0)} rendered variants, one per question)")
     print(f"scorer {run['scorer_digest']}   dataset {run['dataset_digest']}   k={run['k_observed']}")
+    cfg, idx = run.get("retrieval_config"), run.get("index_state")
+    print(f"retrieval {run.get('retrieval_digest') or 'not recorded'}"
+          + (f"   {'  '.join(f'{k.split(chr(46))[-1]}={v}' for k, v in cfg.items())}" if cfg else ""))
+    if idx:
+        print(f"index {run.get('index_digest')}   {idx['chunks']} chunks from"
+              f" {idx['documents']} documents, indexed {idx['indexed_at']}")
 
     print("\nby group          retrieval   answer")
     for g, v in run["by_group"].items():
@@ -167,13 +202,13 @@ def report(run, cases, reference, ref_why, previous, prev_why) -> int:
     print("  (unanswerable has no retrieval score: there is nothing to find)")
 
     if reference:
-        harness.compare(run, reference, "vs REFERENCE (pinned)", sub)
+        harness.compare(run, reference, "vs REFERENCE (pinned)", sub, flags=FLAGS)
     else:
         print(f"\nvs REFERENCE (pinned): none - {ref_why}")
         print("  pin one with:  python evals/run_retrieval.py --set-baseline [RUN_ID]")
 
     if previous and not (reference and harness.run_id_of(previous) == harness.run_id_of(reference)):
-        harness.compare(run, previous, "vs previous run", sub)
+        harness.compare(run, previous, "vs previous run", sub, flags=FLAGS)
     elif not previous:
         print(f"\nvs previous run: none - {prev_why}")
     else:
