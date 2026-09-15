@@ -69,7 +69,7 @@ cd api && python index_docs.py     # 51 chunks from 6 documents
 
 Indexing is a **separate operation**; the API reads the index per request, so re-indexing needs no restart. Chunks follow markdown heading structure, and the heading path (`api/README.md > CI > What CI cannot cover`) travels with the chunk — it is prepended before embedding *and* is what makes a passage citable. `api/prompts/` is excluded by prefix so the model cannot retrieve its own instructions.
 
-Deliberately naive: cosine similarity, fixed k=4, no keyword search, no reranking, no threshold. `/chat` is untouched as a baseline. Retrieved passages and their scores appear in the trace panel. **`sources` in the response is authoritative** — the model's inline citations are prose and llama3.2 sometimes invents a heading path by stitching two together.
+Selection is a candidate pool of 20 by cosine similarity, then the top three plus **one slot reserved for a document not already represented** — plain top-k is source-blind and one document would fill every slot on a question whose answer spans two (retrieval 0.619 → 0.691). A flat per-source cap, hybrid lexical+vector (RRF), and k=6 were all measured and reverted; see `api/README.md` for the numbers. Still no reranking, no threshold, no keyword search. `/chat` is untouched as a baseline. Retrieved passages and their scores appear in the trace panel. **`sources` in the response is authoritative** — the model's inline citations are prose and llama3.2 sometimes invents a heading path by stitching two together.
 
 #### Structured output
 
@@ -95,7 +95,7 @@ Failures split into **accepted** (blessed in `cases.json`), **regressions** (wor
 
 #### Retrieval evaluation
 
-`python evals/run_retrieval.py` (31 cases, ~4 min) scores `/ask`. **Two scores, never blended** — `retrieval` (recall of expected passages, order ignored, fractional for multi-document answers) and `answer` (required facts; binary refusal for unanswerable cases). A third derived figure, `answer|found`, gives the answer score over cases where retrieval found everything: currently **0.917 against retrieval 0.619**, so the weakness is the index, not the model.
+`python evals/run_retrieval.py` (31 cases, ~4 min) scores `/ask`. **Two scores, never blended** — `retrieval` (recall of expected passages, order ignored, fractional for multi-document answers) and `answer` (required facts; binary refusal for unanswerable cases). A third derived figure, `answer|found`, gives the answer score over cases where retrieval found everything: currently **0.923 against retrieval 0.691**, so the weakness remains the index rather than the model.
 
 Four groups: `direct`, `vocabulary` (question words absent from the text), `multi_doc` (answer spans two documents), `unanswerable` (must refuse). Expected passages are named by a distinctive substring rather than a heading path, so re-chunking does not break the set.
 

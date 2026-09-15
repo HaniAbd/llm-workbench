@@ -85,7 +85,36 @@ def prune(conn, keep_sources: list[str]) -> int:
     return removed
 
 
-def search(conn, query_vector, limit: int) -> list[dict]:
+def _diversify(rows: list[dict], limit: int, reserve: int) -> list[dict]:
+    """Top-(limit - reserve) by similarity, then `reserve` slots for documents
+    not already represented.
+
+    A flat per-source cap was tried and cost far more than it gained: a direct
+    question often needs the third chunk of the document that dominates the
+    ranking, and a cap evicts it. Reserving only the final slot leaves the
+    head of the ranking untouched and still guarantees a second document is
+    seen by a question whose answer spans two.
+
+    Falls back to plain similarity order if there is no unrepresented document
+    to promote, so this never returns fewer rows than a plain top-k.
+    """
+    head = rows[: max(0, limit - reserve)]
+    seen = {r["source"] for r in head}
+    tail = []
+    for r in rows[len(head):]:
+        if len(tail) == reserve:
+            break
+        if r["source"] not in seen:
+            tail.append(r)
+            seen.add(r["source"])
+    if len(head) + len(tail) < limit:
+        rest = [r for r in rows if r not in head and r not in tail]
+        tail += rest[: limit - len(head) - len(tail)]
+    return head + tail
+
+
+def search(conn, query_vector, limit: int, pool: int | None = None,
+           reserve: int | None = None) -> list[dict]:
     """The naive retrieval: nearest neighbours by cosine distance, nothing else.
 
     No keyword matching, no reranking, no filtering by score. A fixed number of
@@ -95,6 +124,7 @@ def search(conn, query_vector, limit: int) -> list[dict]:
     # Wrapped in Vector(): a bare list adapts to double precision[], which has
     # no <=> operator against a vector column.
     vec = Vector(query_vector)
+    fetch = pool if reserve else limit
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -103,12 +133,15 @@ def search(conn, query_vector, limit: int) -> list[dict]:
             ORDER BY embedding <=> %s
             LIMIT %s
             """,
-            (vec, vec, limit),
+            (vec, vec, fetch),
         )
-        return [
+        rows = [
             {"source": s, "heading_path": h, "text": t, "score": round(float(sc), 4)}
             for s, h, t, sc in cur.fetchall()
         ]
+    if reserve:
+        return _diversify(rows, limit, reserve)
+    return rows
 
 
 def stats(conn) -> dict:

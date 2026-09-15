@@ -361,12 +361,30 @@ api/README.md > api > CI > What CI cannot cover
 
 — which is what makes a retrieved passage citable. The path is also prepended before embedding, so a section's subject is part of its vector even when the body never repeats it. Fenced code blocks suspend heading detection, so a `# comment` in a shell block never starts a new section. Sections over ~1800 characters split again at blank lines; sections under ~120 merge forward rather than occupying a retrieval slot alone.
 
-### What this deliberately does not do
+### How results are selected
 
-Vector similarity, a fixed four passages, nothing else. No keyword search, no reranking, no score threshold, no refusal tuning. The failure modes are meant to be visible:
+Vector similarity picks a candidate pool of 20; the final four are the **top three by similarity** plus one slot **reserved for a document not already represented**.
+
+Plain top-k is source-blind, and a question whose answer spans two documents lost because the better-written one filled every slot — *"What does CI check and what does it deliberately not check?"* returned four passages from `api/README.md` and none from `CLAUDE.md`. Measured: retrieval 0.619 → 0.691, vocabulary 0.429 → 0.571, with `direct` unchanged.
+
+Only the **last** slot is reserved, not a cap on every document. A flat cap of two per source was tried first and cost far more than it gained (direct 0.875 → **0.625**): a direct answer often needs the *third* chunk of the document that dominates the ranking, and a cap evicts it.
+
+Three changes were measured and reverted:
+
+| Change | Result |
+| --- | --- |
+| Flat per-source cap of 2 | retrieval 0.619 → **0.548**; direct 0.875 → **0.625** |
+| Hybrid lexical + vector, reciprocal rank fusion | retrieval 0.691 → 0.667, multi_doc 0.583 → **0.500**. On 59 chunks a common term like `trace` matches many, and that noise displaced good vector hits. |
+| `k` 4 → 6 | retrieval 0.691 → **0.809**, but answers fell below baseline (0.790 → 0.726) and `answer\|found` 0.923 → 0.833 — worse answers *even where retrieval found everything*. More context dilutes. |
+
+`nomic-embed-text` task prefixes (`search_query:` / `search_document:`) were tested offline and made ranks mostly worse; Ollama's build appears to apply them already.
+
+### What this still does not do
+
+No keyword search, no reranking, no score threshold, no refusal tuning. The failure modes are meant to be visible:
 
 - **Fixed k always returns something.** Ask "Name one sea" and four passages come back at ~0.47, none relevant. The prompt carries the weight of noticing.
-- **Similarity is not relevance.** "What port does the API run on?" ranks *Prerequisites* above *Run*, which is the section that actually contains `8000`.
+- **Similarity is not relevance.** Questions whose words do not appear in the text remain the weakest group (vocabulary, 0.571).
 - **Citations are model-generated prose.** `llama3.2` sometimes stitches two heading paths into one that does not exist. Trust the `sources` list, not the sentence.
 
 
@@ -379,19 +397,19 @@ python evals/run_retrieval.py --history
 ```
 
 ```
-retrieval=0.619  answer=0.758   (31 cases)
-answer|found=0.917   (answer over the 12 cases where retrieval found everything)
+retrieval=0.691  answer=0.790   (31 cases)
+answer|found=0.923   (answer over the 13 cases where retrieval found everything)
 
 by group          retrieval   answer
-  direct               0.875    0.875
-  multi_doc            0.500    0.667
+  direct               0.875    0.938
+  multi_doc            0.583    0.750
   unanswerable             —    0.900
-  vocabulary           0.429    0.500
+  vocabulary           0.571    0.500
 ```
 
 **Two scores, never blended.** Retrieval and generation fail independently: the index can miss the passage, or find it and the model can still answer badly from it. One number would say something is wrong without saying which half to fix.
 
-`answer|found` is the figure that separates them — the answer score over only those cases where retrieval found everything it should. At **0.917** against a retrieval score of **0.619**, the current weakness is the index, not the model.
+`answer|found` is the figure that separates them — the answer score over only those cases where retrieval found everything it should. At **0.923** against a retrieval score of **0.691**, the weakness remains the index rather than the model — retrieval improved from 0.619 but is still the lower of the two.
 
 | Group | What it tests |
 | --- | --- |

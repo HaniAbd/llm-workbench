@@ -20,6 +20,13 @@ from embeddings import embed_one
 # kind of thing worth doing only after seeing what the fixed version gets wrong.
 RETRIEVE_K = 4
 
+# Pick the final K from a larger candidate pool: the first K-RESERVE slots by
+# pure similarity, the remainder for documents not already represented. K is
+# deliberately unchanged, so the model sees the same amount of context and any
+# change in the answer score comes from which passages arrived, not how many.
+CANDIDATE_POOL = 20
+RESERVE_FOR_OTHER_SOURCES = 1
+
 
 class Source(BaseModel):
     """Where a passage came from, precisely enough to go and check."""
@@ -50,7 +57,8 @@ def retrieve(question: str, k: int = RETRIEVE_K) -> list[dict]:
     a re-index between requests is picked up with no restart."""
     vector = embed_one(question)
     with store.connect() as conn:
-        return store.search(conn, vector, k)
+        return store.search(conn, vector, k, pool=CANDIDATE_POOL,
+                            reserve=RESERVE_FOR_OTHER_SOURCES)
 
 
 def answer_question(client, model: str, question: str, span=None) -> Answer:
