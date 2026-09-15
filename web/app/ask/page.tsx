@@ -166,11 +166,12 @@ export default function AskPage() {
         )}
 
         {outcome?.kind === "ok" && (() => {
-          const { answer, sources, trace } = outcome.result;
+          const { answered, answer, sources, trace } = outcome.result;
           const best = sources.length ? Math.max(...sources.map((s) => s.score)) : 0;
           const weak = sources.length === 0 || best < WEAK_MATCH_BELOW;
           const quoted = sources.filter((s) => quotedIn(answer, s.heading_path));
-          const citesNothingReal = looksLikeACitation(answer) && quoted.length === 0;
+          const citesNothingReal =
+            answered && looksLikeACitation(answer) && quoted.length === 0;
 
           return (
             <div className="flex flex-col gap-3">
@@ -194,10 +195,20 @@ export default function AskPage() {
                 </div>
               )}
 
+              {!answered && (
+                <div className="rounded border border-zinc-400/50 bg-zinc-400/10 px-3 py-2 text-sm text-zinc-700 dark:text-zinc-300">
+                  <strong className="font-medium">Not in the documentation.</strong>{" "}
+                  The system is saying it does not know, which is a correct
+                  outcome — not a failure. The passages below were the nearest
+                  found, and none of them answers the question.
+                </div>
+              )}
+
               <div className="flex flex-col gap-1">
                 <span className="text-[10px] uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                  answer — the model&apos;s words, which may misquote or
-                  abbreviate a source
+                  {answered
+                    ? "answer — the model's words, which may misquote or abbreviate a source"
+                    : "what it said"}
                 </span>
                 <p className="whitespace-pre-wrap leading-7 text-black dark:text-zinc-100">
                   {answer}

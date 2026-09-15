@@ -401,6 +401,42 @@ Three changes were measured and reverted:
 
 `nomic-embed-text` task prefixes (`search_query:` / `search_document:`) were tested offline and made ranks mostly worse; Ollama's build appears to apply them already.
 
+### Saying it does not know
+
+`/ask` returns `answered: bool`. False means the documentation does not contain the answer — a **correct outcome, not an error**: the request succeeded and retrieval ran. Failures are 502/503 and carry no answer at all.
+
+Two mechanisms, in order:
+
+1. **A similarity floor at 0.52.** Below it the model is not called at all and a refusal is returned directly.
+2. **A sentinel.** The prompt asks the model to begin a refusal with `NOT_IN_DOCS`, which the server strips and turns into the flag.
+
+#### A threshold alone does not work here
+
+Worth stating plainly, because the floor above looks like one and is not doing the work. Measured on the eval set:
+
+| | |
+| --- | --- |
+| Separability (AUC) | **0.829** — better than chance, nowhere near separable |
+| Overlap band | 0.5282–0.6409 contains **8 of 21** answerable and **8 of 10** unanswerable |
+| Best possible threshold | catches 6/10 unanswerable, wrongly refuses 2/21 answerable |
+| To catch all 10 | must wrongly refuse **8 of 21** answerable questions |
+
+And the comparison that settles it: **the prompt alone already refuses 9 of 10**. A threshold at its optimum does worse than that while adding false refusals. The floor survives only because it is set at 0.52 — below the lowest answerable question — so it catches the single case the prompt misses and nothing else.
+
+That margin is thin and should be read as such: the lowest answerable question scores 0.5282 and the highest question the floor catches scores 0.5065. **Twenty-two thousandths, measured on ten off-topic questions.** It is a floor that is cheap, not one that is calibrated.
+
+#### What the signal cost
+
+Three mechanisms were measured for producing the flag. All three cost something:
+
+| Mechanism | Flag | Effect |
+| --- | --- | --- |
+| Constrain the whole reply to JSON | correct | `answer` 0.823 → **0.618**; prose became terse and stopped containing the facts |
+| Separate schema-constrained judge call | **22/31** | scorecard untouched, but the flag is the worst measured and latency 2.3s → **12.1s** |
+| **Sentinel in the answer prompt** (shipped) | **30/31** | `direct` 0.938 → **0.750** |
+
+The judge call is the instructive failure: it reproduced the best scorecard exactly, *because the suite scores refusal from prose and the judge does not touch the prose*. The suite cannot see the thing being built.
+
 ### What this still does not do
 
 No keyword search, no reranking, no score threshold, no refusal tuning. The failure modes are meant to be visible:

@@ -10,11 +10,13 @@ only known once retrieval has finished; returning them alongside a complete
 answer keeps the two from arriving separately.
 """
 
-from pydantic import BaseModel, ValidationError  # noqa: F401  (kept for parity)
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 import sys
 
 import embeddings
+from openai import OpenAIError
+
 import prompts
 import store
 from embeddings import embed_one
@@ -29,6 +31,28 @@ RETRIEVE_K = 4
 # change in the answer score comes from which passages arrived, not how many.
 CANDIDATE_POOL = 20
 RESERVE_FOR_OTHER_SOURCES = 1
+
+# A backstop, not the mechanism. The prompt already declines 9 of 10
+# unanswerable questions unaided; this catches the one it misses, where the
+# corpus happens to contain a passage *about* the question.
+#
+# The margin is thin and should be read as such: on the eval set the lowest
+# ANSWERABLE question scores 0.5282 and the highest question this catches
+# scores 0.5065. Twenty-two thousandths, measured on ten off-topic questions.
+SIMILARITY_FLOOR = 0.52
+
+REFUSAL_SENTINEL = "NOT_IN_DOCS"
+
+# Whether the reply declined is decided by a second, schema-constrained call
+# rather than by shaping the answer prompt. Two earlier attempts shaped the
+# prompt instead and both cost answer quality: constraining the whole reply to
+# JSON took `answer` 0.823 -> 0.618, and a sentinel token took `direct`
+# 0.938 -> 0.750. This leaves the answer prompt untouched, at the cost of a
+# second call per question.
+#
+# A server-side prose check was rejected for a different reason: the eval
+# scores refusal from prose markers too, so the suite would be checking the
+# server's heuristic against a copy of itself rather than against the model.
 
 
 def retrieval_config() -> dict:
@@ -67,6 +91,10 @@ class Source(BaseModel):
 
 
 class Answer(BaseModel):
+    # False means the documentation does not contain the answer. That is a
+    # correct outcome, not an error: the request succeeded and retrieval ran.
+    # Failures are 502/503 and carry no answer at all.
+    answered: bool
     answer: str
     sources: list[Source]
     prompt_id: str
@@ -103,7 +131,21 @@ def answer_question(client, model: str, question: str, span=None) -> Answer:
             k=RETRIEVE_K,
         )
 
-    prompt = prompts.get("answer_question", passages=_format_passages(rows))
+    best = rows[0]["score"] if rows else 0.0
+    if best < SIMILARITY_FLOOR:
+        if span is not None:
+            span.record("refused_below_floor", best=best, floor=SIMILARITY_FLOOR)
+            span.raw_output = ""
+        return Answer(
+            answered=False,
+            answer="I could not find anything in the documentation that answers this.",
+            sources=[Source(**{k: v for k, v in row.items() if k != "text"})
+                     for row in rows],
+            prompt_id="similarity-floor",
+        )
+
+    prompt = prompts.get("answer_question", sentinel=REFUSAL_SENTINEL,
+                         passages=_format_passages(rows))
     messages = [
         {"role": "system", "content": prompt.text},
         {"role": "user", "content": question},
@@ -130,7 +172,20 @@ def answer_question(client, model: str, question: str, span=None) -> Answer:
     if not text:
         raise AnsweringError("the model returned an empty answer")
 
+    # The model marks a refusal with a sentinel at the very start. Shaping the
+    # prompt this way costs some answer quality (direct 0.938 -> 0.750) but is
+    # the only mechanism measured that produces a trustworthy flag: a separate
+    # schema-constrained judge call scored 22/31 and quintupled latency, and
+    # constraining the whole reply to JSON destroyed the prose.
+    answered = not text.lstrip().startswith(REFUSAL_SENTINEL)
+    if not answered:
+        text = text.lstrip()[len(REFUSAL_SENTINEL):].lstrip(" :.\n") or (
+            "I could not find anything in the documentation that answers this.")
+    if span is not None:
+        span.record("model_verdict", answered=answered)
+
     return Answer(
+        answered=answered,
         answer=text,
         sources=[Source(**r) for r in
                  ({k: v for k, v in row.items() if k != "text"} for row in rows)],

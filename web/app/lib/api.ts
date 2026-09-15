@@ -23,6 +23,9 @@ export type Retrieved = {
 export type Source = { source: string; heading_path: string; score: number };
 
 export type AskResult = {
+  /** False when the documentation does not contain the answer. A correct
+   *  outcome, not an error - errors are 502/503 and carry no answer. */
+  answered: boolean;
   answer: string;
   sources: Source[];
   prompt_id: string;
