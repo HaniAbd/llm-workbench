@@ -113,6 +113,18 @@ A retrieval run also records `retrieval_digest` (the knobs) and `index_digest` (
 
 Knobs are collected by introspection over module constants in `answering` and `embeddings`, so adding one needs no edit — a hand-maintained list is exactly the gap that looks covered.
 
+#### Generated API types
+
+`api/openapi.json` and `web/app/lib/api.generated.ts` are generated from the pydantic models and **committed** — never hand-edited. `web/app/lib/api.ts` only aliases them; it declares no shapes.
+
+```bash
+cd api && python dump_openapi.py && cd ../web && npm run gen:api
+```
+
+Each link is checked on the side that has the tooling: `pytest` fails if `openapi.json` is stale (`tests/test_api_contract.py`), `npm run check:api` fails if the TypeScript is. So a rename cannot pass on one side while silently breaking the other — which it used to, because the trace was written out five times over.
+
+`TraceEvent` is `extra="allow"` → `additionalProperties: true` → a TS index signature, so a **new event kind costs no change anywhere**. A new top-level trace field is two adjacent edits in `tracing.py` plus the regenerate commands.
+
 #### Development traces
 
 Both endpoints return a `trace` beside their normal output — a field on `/classify`, a `trace` SSE event after the last token on `/chat` (so it cannot delay streaming). It is a **superset of the `llm_call` log line**: the log stays scalar and greppable, the trace adds `messages_sent`, `raw_output`, and an ordered `events` list.

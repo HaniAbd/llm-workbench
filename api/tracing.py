@@ -16,6 +16,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Iterator
 
+from pydantic import BaseModel, ConfigDict
+
 _logger = logging.getLogger("llm.trace")
 
 
@@ -36,6 +38,69 @@ def _configure() -> None:
 
 
 _configure()
+
+
+class SentMessage(BaseModel):
+    """One message as it was handed to the model."""
+
+    role: str
+    content: str
+
+
+class RetrievedPassage(BaseModel):
+    """One passage retrieval returned, with how well it matched."""
+
+    source: str
+    heading_path: str
+    text: str
+    score: float
+
+
+class TraceEvent(BaseModel):
+    """One step, stamped with how far into the call it happened.
+
+    `extra="allow"` is the extension point: a step carries whatever fields
+    suit it, and adding a new kind - a tool call, an agent step - needs no
+    change here and no change on the front end, which renders unknown fields
+    generically. It reaches TypeScript as an index signature.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    at_ms: int
+    kind: str
+
+
+class TraceDocument(BaseModel):
+    """The trace, and the single source of its shape.
+
+    Everything downstream is derived from this: the dict `ChatSpan.trace()`
+    returns, the scalar subset the log line prints, the OpenAPI schema FastAPI
+    publishes, and through that the TypeScript the front end compiles against.
+    Adding a field here is the whole change; `npm run gen:api` carries it the
+    rest of the way and the test suite fails if it has not been run.
+    """
+
+    model: str
+    prompt_id: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    ttft_ms: int | None = None
+    latency_ms: int
+    finish_reason: str | None = None
+    error: str | None = None
+    messages_sent: list[SentMessage] | None = None
+    retrieved: list[RetrievedPassage] | None = None
+    raw_output: str | None = None
+    events: list[TraceEvent] = []
+
+
+# The log line is the scalar half of the same document: one greppable row, so
+# the fields that can be unboundedly large are left out. Named as an exclusion
+# rather than a second field list, so a field added above appears in the log
+# unless it is deliberately excluded here.
+_BULKY_FIELDS = ("messages_sent", "retrieved", "raw_output", "events")
+LOG_FIELDS = tuple(f for f in TraceDocument.model_fields if f not in _BULKY_FIELDS)
 
 
 @dataclass
@@ -81,24 +146,13 @@ class ChatSpan:
     def trace(self) -> dict:
         """The document handed to the browser.
 
-        A superset of the log line. The log stays scalar and greppable; this
-        carries the bulky parts - the messages, the raw reply, the step list -
-        because a development panel wants exactly what a log file should not.
+        Built by reading `TraceDocument`'s fields off this span rather than by
+        listing them again: the span's attribute names are the document's, so
+        a field added to the model is carried here with no edit.
         """
-        return {
-            "model": self.model,
-            "prompt_id": self.prompt_id,
-            "input_tokens": self.input_tokens,
-            "output_tokens": self.output_tokens,
-            "ttft_ms": self.ttft_ms,
-            "latency_ms": self.latency_ms,
-            "finish_reason": self.finish_reason,
-            "error": self.error,
-            "messages_sent": self.messages_sent,
-            "retrieved": self.retrieved,
-            "raw_output": self.raw_output,
-            "events": self.events,
-        }
+        return TraceDocument(
+            **{name: getattr(self, name) for name in TraceDocument.model_fields}
+        ).model_dump()
 
     def first_token(self) -> None:
         """Mark the first content token. Idempotent, so it can be called on
@@ -120,19 +174,15 @@ class ChatSpan:
 
 
 def _emit(span: ChatSpan) -> None:
+    """One greppable row per call.
+
+    The fields come from `TraceDocument` minus the bulky ones, so the log and
+    the trace cannot describe different calls.
+    """
     _logger.info(
         json.dumps(
-            {
-                "event": "llm_call",
-                "model": span.model,
-                "prompt_id": span.prompt_id,
-                "input_tokens": span.input_tokens,
-                "output_tokens": span.output_tokens,
-                "ttft_ms": span.ttft_ms,
-                "latency_ms": span.latency_ms,
-                "finish_reason": span.finish_reason,
-                "error": span.error,
-            }
+            {"event": "llm_call",
+             **{name: getattr(span, name) for name in LOG_FIELDS}}
         )
     )
 

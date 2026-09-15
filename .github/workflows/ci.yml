@@ -63,6 +63,13 @@ jobs:
       - name: Generate route types
         run: npx next typegen
 
+      # The api job checks that openapi.json matches the pydantic models. This
+      # checks the other half: that the committed TypeScript matches
+      # openapi.json. Between them a shape cannot change on one side and pass
+      # on the other.
+      - name: API types are in step with the schema
+        run: npm run check:api
+
       - name: Typecheck
         run: npx tsc --noEmit
 

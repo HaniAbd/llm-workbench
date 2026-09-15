@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "gen:api": "openapi-typescript ../api/openapi.json -o app/lib/api.generated.ts",
+    "check:api": "openapi-typescript ../api/openapi.json -o /tmp/api.generated.check.ts && diff -q app/lib/api.generated.ts /tmp/api.generated.check.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
@@ -26,6 +28,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
+    "openapi-typescript": "^7.13.0",
     "shadcn": "^4.21.0",
     "tailwindcss": "^4",
     "typescript": "^5"

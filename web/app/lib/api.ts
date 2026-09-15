@@ -1,3 +1,5 @@
+import type { components } from "./api.generated";
+
 /** Below this, a retrieved passage is shown as a weak match. Measured on this
  *  corpus: questions the docs cover score 0.62-0.72, "Name one sea" scores
  *  0.466-0.478. 0.55 sits in the gap. Defined once because the ask page's
@@ -6,62 +8,32 @@ export const WEAK_MATCH_BELOW = 0.55;
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-/** One step in a call. `kind` is open-ended on purpose: retrieval, tool calls
- *  and agent steps will arrive as new kinds, and the panel renders any of them
- *  without needing to know them in advance. */
-export type TraceEvent = {
-  at_ms: number;
-  kind: string;
-  [key: string]: unknown;
-};
+/** Every shape below is an alias onto `api.generated.ts`, which is generated
+ *  from `api/openapi.json`, which FastAPI derives from its pydantic models.
+ *  There is no hand-written copy of any of these: a field renamed in
+ *  `api/tracing.py` fails `npm run check:api` rather than silently leaving the
+ *  panel a field short.
+ *
+ *  Regenerate with:  cd api && python dump_openapi.py && cd ../web && npm run gen:api
+ *
+ *  `Required<...>` because pydantic marks a field with a default as optional
+ *  in the schema, while the server always serialises every key. The names on
+ *  the left are the app's; the names on the right are the API's. */
+type Schemas = components["schemas"];
 
-export type SentMessage = { role: string; content: string };
-
-/** One passage retrieved from the document index, with how well it matched. */
-export type Retrieved = {
-  source: string;
-  heading_path: string;
-  text: string;
-  score: number;
-};
-
-/** A source behind an answer. Same shape minus the passage body. */
-export type Source = { source: string; heading_path: string; score: number };
-
-export type AskResult = {
-  /** False when the documentation does not contain the answer. A correct
-   *  outcome, not an error - errors are 502/503 and carry no answer. */
-  answered: boolean;
-  answer: string;
-  sources: Source[];
-  prompt_id: string;
+export type Trace = Required<Schemas["TraceDocument"]>;
+export type TraceEvent = Schemas["TraceEvent"];
+export type Retrieved = Schemas["RetrievedPassage"];
+export type SentMessage = Schemas["SentMessage"];
+export type Source = Schemas["Source"];
+// `Required` is shallow, so the nested trace is restated to pick up the same
+// treatment rather than arriving half-optional.
+export type AskResult = Required<Omit<Schemas["AskResponse"], "trace">> & {
   trace: Trace;
 };
-
-export type Trace = {
-  model: string;
-  prompt_id: string | null;
-  input_tokens: number | null;
-  output_tokens: number | null;
-  ttft_ms: number | null;
-  latency_ms: number;
-  finish_reason: string | null;
-  error: string | null;
-  messages_sent: SentMessage[] | null;
-  retrieved: Retrieved[] | null;
-  raw_output: string | null;
-  events: TraceEvent[];
-};
-
-export type Classification = {
-  is_support_ticket: boolean;
-  category: string;
-  urgency: string;
-  sentiment: string;
-  requires_human: boolean;
-  prompt_id: string;
-  trace: Trace;
-};
+export type Classification = Required<
+  Omit<Schemas["ClassificationResponse"], "trace">
+> & { trace: Trace };
 
 /** Reads an SSE body, handing each complete frame to `onEvent`.
  *  Frames are split across reads, so only what is terminated by a blank line

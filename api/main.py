@@ -14,7 +14,7 @@ import prompts
 import store
 from answering import Answer, AnsweringError, answer_question, retrieval_config
 from classification import ClassificationError, ClassificationResult, classify
-from tracing import chat_span
+from tracing import TraceDocument, chat_span
 
 load_dotenv(dotenv_path="../.env")
 
@@ -144,7 +144,10 @@ class ClassifyRequest(BaseModel):
 class ClassificationResponse(ClassificationResult):
     """The classification plus the development trace behind it."""
 
-    trace: dict[str, Any]
+    # Typed, not `dict`, so the shape reaches OpenAPI and from there the
+    # front end's generated types. This is the only hole that stopped the
+    # published schema describing the whole response.
+    trace: TraceDocument
 
 
 def _failure(span, message: str) -> dict[str, Any]:
@@ -191,7 +194,10 @@ class AskRequest(BaseModel):
 class AskResponse(Answer):
     """The answer, the passages behind it, and the development trace."""
 
-    trace: dict[str, Any]
+    # Typed, not `dict`, so the shape reaches OpenAPI and from there the
+    # front end's generated types. This is the only hole that stopped the
+    # published schema describing the whole response.
+    trace: TraceDocument
 
 
 @app.post("/ask", response_model=AskResponse)

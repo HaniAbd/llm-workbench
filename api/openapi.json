@@ -1,0 +1,586 @@
+{
+  "components": {
+    "schemas": {
+      "AskRequest": {
+        "properties": {
+          "question": {
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "AskRequest",
+        "type": "object"
+      },
+      "AskResponse": {
+        "description": "The answer, the passages behind it, and the development trace.",
+        "properties": {
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          },
+          "answered": {
+            "title": "Answered",
+            "type": "boolean"
+          },
+          "prompt_id": {
+            "title": "Prompt Id",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "trace": {
+            "$ref": "#/components/schemas/TraceDocument"
+          }
+        },
+        "required": [
+          "answered",
+          "answer",
+          "sources",
+          "prompt_id",
+          "trace"
+        ],
+        "title": "AskResponse",
+        "type": "object"
+      },
+      "ChatRequest": {
+        "properties": {
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/Message"
+            },
+            "minItems": 1,
+            "title": "Messages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "title": "ChatRequest",
+        "type": "object"
+      },
+      "ClassificationResponse": {
+        "additionalProperties": false,
+        "description": "The classification plus the development trace behind it.",
+        "properties": {
+          "category": {
+            "enum": [
+              "billing",
+              "technical",
+              "account",
+              "feedback",
+              "other"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "is_support_ticket": {
+            "title": "Is Support Ticket",
+            "type": "boolean"
+          },
+          "prompt_id": {
+            "title": "Prompt Id",
+            "type": "string"
+          },
+          "requires_human": {
+            "title": "Requires Human",
+            "type": "boolean"
+          },
+          "sentiment": {
+            "enum": [
+              "positive",
+              "neutral",
+              "frustrated",
+              "angry"
+            ],
+            "title": "Sentiment",
+            "type": "string"
+          },
+          "trace": {
+            "$ref": "#/components/schemas/TraceDocument"
+          },
+          "urgency": {
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "title": "Urgency",
+            "type": "string"
+          }
+        },
+        "required": [
+          "is_support_ticket",
+          "category",
+          "urgency",
+          "sentiment",
+          "requires_human",
+          "prompt_id",
+          "trace"
+        ],
+        "title": "ClassificationResponse",
+        "type": "object"
+      },
+      "ClassifyRequest": {
+        "properties": {
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "ClassifyRequest",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "Message": {
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "Message",
+        "type": "object"
+      },
+      "RetrievedPassage": {
+        "description": "One passage retrieval returned, with how well it matched.",
+        "properties": {
+          "heading_path": {
+            "title": "Heading Path",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "heading_path",
+          "text",
+          "score"
+        ],
+        "title": "RetrievedPassage",
+        "type": "object"
+      },
+      "SentMessage": {
+        "description": "One message as it was handed to the model.",
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "SentMessage",
+        "type": "object"
+      },
+      "Source": {
+        "description": "Where a passage came from, precisely enough to go and check.",
+        "properties": {
+          "heading_path": {
+            "title": "Heading Path",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "heading_path",
+          "score"
+        ],
+        "title": "Source",
+        "type": "object"
+      },
+      "TraceDocument": {
+        "description": "The trace, and the single source of its shape.\n\nEverything downstream is derived from this: the dict `ChatSpan.trace()`\nreturns, the scalar subset the log line prints, the OpenAPI schema FastAPI\npublishes, and through that the TypeScript the front end compiles against.\nAdding a field here is the whole change; `npm run gen:api` carries it the\nrest of the way and the test suite fails if it has not been run.",
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "events": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/TraceEvent"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "finish_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finish Reason"
+          },
+          "input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Tokens"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "integer"
+          },
+          "messages_sent": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SentMessage"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Messages Sent"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          },
+          "prompt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Id"
+          },
+          "raw_output": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Output"
+          },
+          "retrieved": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/RetrievedPassage"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retrieved"
+          },
+          "ttft_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttft Ms"
+          }
+        },
+        "required": [
+          "model",
+          "latency_ms"
+        ],
+        "title": "TraceDocument",
+        "type": "object"
+      },
+      "TraceEvent": {
+        "additionalProperties": true,
+        "description": "One step, stamped with how far into the call it happened.\n\n`extra=\"allow\"` is the extension point: a step carries whatever fields\nsuit it, and adding a new kind - a tool call, an agent step - needs no\nchange here and no change on the front end, which renders unknown fields\ngenerically. It reaches TypeScript as an index signature.",
+        "properties": {
+          "at_ms": {
+            "title": "At Ms",
+            "type": "integer"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at_ms",
+          "kind"
+        ],
+        "title": "TraceEvent",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "FastAPI",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/ask": {
+      "post": {
+        "description": "Answer from the indexed documentation. Not streamed: the sources are\npart of the result and are only known once retrieval has finished.\n\nReads the index per request, so `python index_docs.py` takes effect on the\nnext question with no restart.",
+        "operationId": "ask_ask_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask"
+      }
+    },
+    "/chat": {
+      "post": {
+        "operationId": "chat_chat_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Chat"
+      }
+    },
+    "/classify": {
+      "post": {
+        "description": "Classify one support ticket. Whole object or an error \u2014 never partial.\n\nNot streamed: the caller wants a complete result, and a half-received\nobject cannot be validated against the schema.",
+        "operationId": "classify_ticket_classify_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClassifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Classify Ticket"
+      }
+    },
+    "/retrieval/config": {
+      "get": {
+        "description": "How retrieval is configured, and what it is searching.\n\nReported by the running process rather than read off disk, because the\neval scores whatever this server actually did. A file on disk can be ahead\nof a server that has not restarted, and a configuration record that is\nquietly wrong is worse than none - it looks covered.\n\n`config` is collected by introspection, so a knob added to `answering` or\n`embeddings` appears here without this endpoint being touched.\n`index` describes the corpus that was searched, which moves independently\nof the knobs: re-indexing edited documents changes results without any\nsetting changing.",
+        "operationId": "retrieval_configuration_retrieval_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Retrieval Configuration"
+      }
+    }
+  }
+}

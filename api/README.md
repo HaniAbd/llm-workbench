@@ -594,6 +594,40 @@ Both flags are load-bearing. `grep` and `jq` each switch to block buffering when
 
 This is the seam for real tracing later: `chat_span()` is shaped like an OpenTelemetry span or a Langfuse generation, so replacing it means rewriting `chat_span` and `_emit` in `tracing.py` and leaving `main.py` alone.
 
+## One source for the API's shapes
+
+`api/openapi.json` and `web/app/lib/api.generated.ts` are **generated, committed, and checked** — never edited:
+
+```
+pydantic models          api/tracing.py, main.py, classification.py
+      |  FastAPI
+      v
+api/openapi.json         python dump_openapi.py    <- pytest checks it is current
+      |  openapi-typescript
+      v
+web/.../api.generated.ts  npm run gen:api          <- npm run check:api in the web build
+      |
+      v
+web/app/lib/api.ts       aliases only; declares no shapes
+```
+
+Both artifacts are committed because the web CI job has no Python. Each link is guarded on the side that has the tooling for it: `pytest` fails if `openapi.json` is stale, `npm run check:api` fails if the TypeScript is. **A shape cannot change on one side and pass on the other.**
+
+After changing a model:
+
+```bash
+cd api && python dump_openapi.py
+cd ../web && npm run gen:api
+```
+
+The trace used to be written out five times — the `ChatSpan` fields, the dict in `trace()`, the log line in `_emit()`, the TypeScript type, and a hardcoded key set in the test meant to protect it. A rename left all five passing while the panel quietly lost a field. `trace()` and `_emit()` now read their fields off `TraceDocument`, and the test asserts against it rather than a copy of it.
+
+### Adding to the trace
+
+A new **event kind** — a tool call, an agent step — costs nothing. `TraceEvent` is `extra="allow"`, which reaches the schema as `additionalProperties: true` and TypeScript as an index signature, and the panel already renders unknown fields generically.
+
+A new **top-level field** is two adjacent edits in `api/tracing.py` (the `ChatSpan` attribute and the `TraceDocument` field) plus the two regenerate commands. The tests fail loudly if either is missed.
+
 ## Development traces
 
 Both endpoints return a `trace` alongside their normal output: on `/classify` as a field, on `/chat` as a `trace` SSE event emitted after the last token. It is what the `web/` panel renders, and it is a **superset of the `llm_call` log line** — the log stays scalar and greppable, the trace carries the bulky parts a log file should not.
