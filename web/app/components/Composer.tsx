@@ -23,6 +23,7 @@ export default function Composer({
   busy,
   placeholder,
   hint,
+  allowEmpty = false,
 }: {
   value: string;
   onChange: (next: string) => void;
@@ -30,6 +31,11 @@ export default function Composer({
   busy: boolean;
   placeholder: string;
   hint?: string;
+  /** Let blank input be submitted. Off for chat and ask, where an empty send
+   *  is only ever a mistake; on for classify, where submitting whitespace is
+   *  how the 422 rejection is demonstrated and the endpoint's own validation
+   *  is the thing being shown. */
+  allowEmpty?: boolean;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -74,7 +80,7 @@ export default function Composer({
             />
             <button
               type="submit"
-              disabled={busy || !value.trim()}
+              disabled={busy || (!allowEmpty && !value.trim())}
               aria-label={busy ? "Waiting for the model" : "Send"}
               className={cn(
                 "grid size-9 shrink-0 place-items-center rounded-xl transition-all duration-200",

@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Loader } from "@/components/ai-elements/loader";
 import { cn } from "@/lib/utils";
+import Composer from "../components/Composer";
 import { Label, Notice } from "../components/Notice";
 import { TraceTrigger } from "../components/TraceDrawer";
 import { API_BASE, type Classification, type Trace } from "../lib/api";
@@ -96,7 +96,10 @@ export default function ClassifyPage() {
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 px-5 py-8">
+    // pb-48 keeps the result clear of the fixed composer, which overlays the
+    // page rather than sitting in its flow - the same arrangement as the chat
+    // and ask pages.
+    <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 px-5 pb-48 pt-8">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Classify a ticket</h1>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -127,22 +130,6 @@ export default function ClassifyPage() {
         ))}
       </div>
 
-      <form onSubmit={submit} className="flex flex-col gap-3">
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          rows={5}
-          className="w-full resize-none rounded-xl border border-border bg-card p-3.5 font-mono text-sm leading-relaxed text-foreground outline-none transition-colors focus:border-primary/60"
-        />
-        <button
-          type="submit"
-          disabled={busy}
-          className="flex items-center gap-2 self-start rounded-xl bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-all enabled:hover:brightness-110 enabled:active:scale-95 disabled:bg-muted disabled:text-muted-foreground"
-        >
-          {busy && <Loader size={14} />}
-          {busy ? "classifying…" : "Classify"}
-        </button>
-      </form>
 
       {outcome?.kind === "rejected" && (
         <Notice tone="warn" title="Rejected (422).">
@@ -197,6 +184,15 @@ export default function ClassifyPage() {
           />
         </div>
       )}
+      <Composer
+        value={text}
+        onChange={setText}
+        onSubmit={submit}
+        busy={busy}
+        allowEmpty
+        placeholder="Paste a support ticket…"
+        hint="Enter to classify · Shift+Enter for a new line"
+      />
     </main>
   );
 }
