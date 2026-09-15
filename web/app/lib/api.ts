@@ -11,6 +11,24 @@ export type TraceEvent = {
 
 export type SentMessage = { role: string; content: string };
 
+/** One passage retrieved from the document index, with how well it matched. */
+export type Retrieved = {
+  source: string;
+  heading_path: string;
+  text: string;
+  score: number;
+};
+
+/** A source behind an answer. Same shape minus the passage body. */
+export type Source = { source: string; heading_path: string; score: number };
+
+export type AskResult = {
+  answer: string;
+  sources: Source[];
+  prompt_id: string;
+  trace: Trace;
+};
+
 export type Trace = {
   model: string;
   prompt_id: string | null;
@@ -21,6 +39,7 @@ export type Trace = {
   finish_reason: string | null;
   error: string | null;
   messages_sent: SentMessage[] | null;
+  retrieved: Retrieved[] | null;
   raw_output: string | null;
   events: TraceEvent[];
 };

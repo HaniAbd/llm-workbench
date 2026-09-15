@@ -1,6 +1,6 @@
 # api
 
-A FastAPI service that fronts a local Ollama model. Two endpoints: `POST /chat` streams prose over Server-Sent Events, and `POST /classify` returns a validated object for one task. Every call leaves one structured log line.
+A FastAPI service that fronts a local Ollama model. Three endpoints: `POST /chat` streams prose over Server-Sent Events, `POST /classify` returns a validated object for one task, and `POST /ask` answers questions from this repository's own documentation. Every call leaves one structured log line.
 
 It exists so the browser never talks to the model directly: the system prompt, sampling settings and the conversation's shape stay on the server, where a client cannot change them.
 
@@ -11,6 +11,8 @@ Two files:
 | `main.py` | HTTP layer — routes, request schemas, CORS, the SSE encoding |
 | `classification.py` | The `/classify` task: output schema and the provider call |
 | `prompts/` | Prompt text as `.md` files, plus the loader that identifies them |
+| `chunking.py`, `embeddings.py`, `store.py` | The document index: splitting markdown, embedding it, storing and searching it in pgvector |
+| `answering.py`, `index_docs.py` | `/ask` and the indexing CLI |
 | `tracing.py` | Observability seam. Knows nothing about OpenAI or FastAPI |
 
 ## Prerequisites
@@ -282,6 +284,86 @@ Failures are sorted into buckets that mean different things, so a new break cann
 - **regressions** — passing in the baseline and failing now, or failing by more. This bucket should be empty; the runner exits non-zero when it is not.
 - **outstanding** — failing, not accepted, and no worse than the baseline. Visible, but kept apart.
 - **fixed** — an accepted failure that now passes, so the acceptance can be removed.
+
+
+## `POST /ask` — answering from the repo's docs
+
+Answers questions about this repository using only its markdown, retrieved from a pgvector index. `/chat` is left alone as a plain-model baseline: ask both the same question and the difference is the retrieval.
+
+**Not streamed.** The sources are as much of the result as the prose, and they are only known once retrieval has finished.
+
+### Setup
+
+Needs Postgres and an embedding model, neither of which the chat model provides:
+
+```bash
+docker compose up -d                 # pgvector on localhost:5433
+ollama pull nomic-embed-text         # 768-dim, trained for retrieval
+cd api && python index_docs.py       # 51 chunks from 6 documents
+```
+
+`llama3.2` can produce vectors, but they are a by-product of a model trained to continue text, and at 3072 dimensions they exceed pgvector's 2000-dimension index limit. Vectors from different models are not comparable, so changing `EMBEDDING_MODEL` means changing `EMBEDDING_DIM` and re-indexing.
+
+### Asking
+
+```bash
+curl -s http://localhost:8000/ask -H 'content-type: application/json' \
+  -d '{"question":"Why is the eval suite not run in CI?"}'
+```
+
+```json
+{
+  "answer": "The eval suite is deliberately not in CI because it needs llama3.2 on your machine... (`api/README.md > api > CI > What CI cannot cover`)",
+  "sources": [
+    {"source": "api/README.md", "heading_path": "api/README.md > api > CI > What CI cannot cover", "score": 0.712},
+    {"source": "CLAUDE.md", "heading_path": "CLAUDE.md > CLAUDE.md > CI and tests", "score": 0.658}
+  ],
+  "prompt_id": "answer_question@...",
+  "trace": { "retrieved": [ ... ] }
+}
+```
+
+`sources` is the authoritative list — it is what retrieval actually supplied, regardless of what the answer text claims to have used. Each entry carries the heading path, so a claim can be checked against the document.
+
+| Input | Result |
+| --- | --- |
+| Blank or whitespace-only `question` | **422**, before embedding or touching Postgres |
+| Anything else | **200** with the answer, sources and trace |
+| Postgres unreachable | **503** naming the fix, rather than an answer with nothing behind it |
+| Model returned nothing, or the provider failed | **502** |
+
+### Indexing
+
+Deliberately a separate operation. The API reads the index per request and caches nothing, so re-indexing takes effect on the next question **with no restart**.
+
+```bash
+python index_docs.py                 # everything
+python index_docs.py --dry-run       # chunk and report, embed nothing
+python index_docs.py --stats         # what is indexed, no work done
+python index_docs.py ../README.md    # one document
+```
+
+A document is replaced wholesale rather than diffed, so a deleted section disappears instead of lingering as an orphan that can still be retrieved. A **full** run also prunes documents no longer on disk; indexing a single document cannot, since it knows nothing about the others.
+
+`api/prompts/` is excluded by directory prefix — indexing prompts would let the model retrieve its own instructions and answer with them.
+
+### How the splitting works
+
+Cutting every N characters would separate a table from its header. Markdown is already a tree of headings, so the split follows that: a piece is one heading and the prose beneath it, and its heading path travels with it —
+
+```
+api/README.md > api > CI > What CI cannot cover
+```
+
+— which is what makes a retrieved passage citable. The path is also prepended before embedding, so a section's subject is part of its vector even when the body never repeats it. Fenced code blocks suspend heading detection, so a `# comment` in a shell block never starts a new section. Sections over ~1800 characters split again at blank lines; sections under ~120 merge forward rather than occupying a retrieval slot alone.
+
+### What this deliberately does not do
+
+Vector similarity, a fixed four passages, nothing else. No keyword search, no reranking, no score threshold, no refusal tuning. The failure modes are meant to be visible:
+
+- **Fixed k always returns something.** Ask "Name one sea" and four passages come back at ~0.47, none relevant. The prompt carries the weight of noticing.
+- **Similarity is not relevance.** "What port does the API run on?" ranks *Prerequisites* above *Run*, which is the section that actually contains `8000`.
+- **Citations are model-generated prose.** `llama3.2` sometimes stitches two heading paths into one that does not exist. Trust the `sources` list, not the sentence.
 
 
 ## Prompts

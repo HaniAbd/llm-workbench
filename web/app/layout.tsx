@@ -35,6 +35,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           >
             Classify
           </Link>
+          <Link href="/ask" className="text-zinc-700 hover:underline dark:text-zinc-300">
+            Ask the docs
+          </Link>
         </nav>
         {children}
       </body>

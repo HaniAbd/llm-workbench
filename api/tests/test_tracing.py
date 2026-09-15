@@ -8,8 +8,8 @@ import tracing
 # What web/app/lib/api.ts declares as `Trace`.
 PANEL_KEYS = {
     "model", "prompt_id", "input_tokens", "output_tokens", "ttft_ms",
-    "latency_ms", "finish_reason", "error", "messages_sent", "raw_output",
-    "events",
+    "latency_ms", "finish_reason", "error", "messages_sent", "retrieved",
+    "raw_output", "events",
 }
 
 

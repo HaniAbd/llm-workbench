@@ -34,8 +34,8 @@ There is no real API key anywhere — swapping to a hosted provider is a matter 
 | Dir | Stack | Role |
 | --- | --- | --- |
 | [scripts/](scripts/) | Node ESM, Vercel AI SDK (`ai` + `@ai-sdk/openai`) | Numbered standalone experiments, run directly with `node` |
-| [api/](api/) | FastAPI + `openai` Python SDK | `POST /chat` streams SSE; `POST /classify` returns a schema-constrained object |
-| [web/](web/) | Next.js 16, React 19, Tailwind v4 | `/` chat, `/classify` ticket classifier, both with a trace panel |
+| [api/](api/) | FastAPI + `openai` Python SDK | `POST /chat` streams SSE; `POST /classify` returns a schema-constrained object; `POST /ask` answers from the repo's own docs |
+| [web/](web/) | Next.js 16, React 19, Tailwind v4 | `/` chat, `/classify` classifier, `/ask` doc search, all with a trace panel |
 
 They are independent: no shared package, no build step linking them. The only contracts between them are the root `.env` and the SSE protocol below.
 
@@ -58,6 +58,18 @@ node 01-first-call.js      # any single file; they are not wired to npm scripts
 - `done` → `{}` — terminator
 
 CORS accepts **any localhost port** via `allow_origin_regex`, not a fixed origin — the Next dev server falls back to 3001, 3002, … whenever its usual port is taken by another project, and a hardcoded origin breaks the page with an opaque "Failed to fetch" when it does. The system prompt and `temperature=0` are hardcoded server-side, and `Message.role` is `Literal["user", "assistant"]` so a client cannot supply a `system` turn of its own — such a request is **rejected with a 422** by validation, before the handler runs, rather than being stripped. Rejected requests never open a span, so they leave no `llm_call` line.
+
+#### Retrieval (`/ask`)
+
+Answers questions from the repo's own markdown. Needs two things the rest does not: **Postgres with pgvector** (`docker compose up -d`, port 5433) and an **embedding model** (`ollama pull nomic-embed-text`, 768-dim). `llama3.2` can embed but at 3072 dims exceeds pgvector's 2000-dim index limit and is not trained for similarity.
+
+```bash
+cd api && python index_docs.py     # 51 chunks from 6 documents
+```
+
+Indexing is a **separate operation**; the API reads the index per request, so re-indexing needs no restart. Chunks follow markdown heading structure, and the heading path (`api/README.md > CI > What CI cannot cover`) travels with the chunk — it is prepended before embedding *and* is what makes a passage citable. `api/prompts/` is excluded by prefix so the model cannot retrieve its own instructions.
+
+Deliberately naive: cosine similarity, fixed k=4, no keyword search, no reranking, no threshold. `/chat` is untouched as a baseline. Retrieved passages and their scores appear in the trace panel. **`sources` in the response is authoritative** — the model's inline citations are prose and llama3.2 sometimes invents a heading path by stitching two together.
 
 #### Structured output
 

@@ -10,6 +10,7 @@ def test_app_imports_and_routes_exist():
     paths = {r.path for r in main.app.routes}
     assert "/chat" in paths
     assert "/classify" in paths
+    assert "/ask" in paths
 
 
 def test_openapi_schema_builds():
@@ -34,6 +35,10 @@ def test_validation_rejects_blank_and_empty_without_a_model():
     assert client.post(
         "/chat", json={"messages": [{"role": "user", "content": "  "}]}
     ).status_code == 422
+    # /ask rejects before embedding or touching Postgres, so this needs
+    # neither a model nor a database.
+    assert client.post("/ask", json={"question": ""}).status_code == 422
+    assert client.post("/ask", json={"question": "   "}).status_code == 422
 
 
 def test_client_supplied_system_role_is_rejected():

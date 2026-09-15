@@ -1,0 +1,29 @@
+# Postgres with pgvector, for the document index.
+#
+#   docker compose up -d
+#
+# Data lives in a named volume, so `docker compose down` keeps the index and
+# `docker compose down -v` throws it away. Re-indexing is cheap either way:
+#   cd api && python index_docs.py
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: llm-workbench-db
+    environment:
+      POSTGRES_USER: workbench
+      POSTGRES_PASSWORD: workbench
+      POSTGRES_DB: workbench
+    ports:
+      # 5433 on the host: 5432 is the conventional port and is often already
+      # taken by another project's Postgres.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U workbench -d workbench"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:

@@ -89,6 +89,36 @@ export default function TracePanel({ trace }: { trace: Trace }) {
           />
         </div>
 
+        {trace.retrieved && trace.retrieved.length > 0 && (
+          <Block label={`retrieved (${trace.retrieved.length} passages, best first)`}>
+            <div className="flex flex-col gap-2">
+              {trace.retrieved.map((r, i) => (
+                <div key={i}>
+                  <div className="flex items-baseline gap-2">
+                    <span className="font-mono text-xs text-black dark:text-zinc-100">
+                      {r.score.toFixed(3)}
+                    </span>
+                    {/* A bar makes the gap between a good and a weak match
+                        obvious at a glance, which the number alone does not. */}
+                    <span className="h-1 w-24 shrink-0 overflow-hidden rounded bg-black/[.08] dark:bg-white/[.145]">
+                      <span
+                        className="block h-full bg-zinc-500 dark:bg-zinc-400"
+                        style={{ width: `${Math.max(0, Math.min(1, r.score)) * 100}%` }}
+                      />
+                    </span>
+                    <span className="truncate font-mono text-[11px] text-zinc-600 dark:text-zinc-400">
+                      {r.heading_path}
+                    </span>
+                  </div>
+                  <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-black/[.04] p-2 font-mono text-[11px] leading-5 text-zinc-800 dark:bg-white/[.06] dark:text-zinc-200">
+                    {r.text}
+                  </pre>
+                </div>
+              ))}
+            </div>
+          </Block>
+        )}
+
         {trace.messages_sent && (
           <Block label={`sent (${trace.messages_sent.length} messages)`}>
             <div className="flex flex-col gap-2">

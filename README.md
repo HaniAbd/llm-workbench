@@ -10,6 +10,7 @@ It is built in steps, so expect finished parts next to unstarted ones. What work
 - **Ticket classification** — a non-streaming endpoint returning a validated object, using Ollama's schema-constrained decoding rather than hoping the model returns valid JSON.
 - **Prompts as files**, identified by a hash of their content, so a result can always be traced to the exact prompt text that produced it.
 - **A trace panel** in the browser showing what was sent, what came back before anything reformatted it, and where the time went.
+- **Retrieval over the repo's own docs** — a `/ask` endpoint answering from this repository's markdown, indexed in Postgres with pgvector, citing the documents it used.
 - **An eval suite** that scores the classifier rather than pass/failing it, and compares a run against a reference you pin.
 - **CI** covering everything that can be checked without a model.
 
@@ -66,6 +67,7 @@ curl -s http://localhost:8000/classify -H 'content-type: application/json' \
 | [`web/`](web/) | Next.js 16, React 19, Tailwind v4 | Chat page, classifier page, and a trace panel for any call |
 | [`scripts/`](scripts/) | Node, Vercel AI SDK | Numbered standalone experiments, read as much as run: first call, temperature, roles, streaming, error handling |
 | [`evals/`](api/evals/) | — | 34 scored cases, run history, pinned reference |
+| [`docker-compose.yml`](docker-compose.yml) | Postgres 17 + pgvector | The document index, on port 5433 |
 
 The three parts are independent — no shared package, no build step linking them. The only contracts between them are the root `.env` and the SSE event protocol.
 
@@ -82,6 +84,27 @@ cd api && python evals/run.py        # 34 cases, ~55s, needs Ollama
 ```
 
 Runs append to `evals/runs.jsonl` and are compared against a reference you pin, so restoring a known-good prompt does not read as a regression.
+
+## Asking about the repo
+
+`/ask` answers from this repository's own markdown rather than from whatever the model happens to know. It needs two extras:
+
+```bash
+docker compose up -d                 # Postgres + pgvector on :5433
+ollama pull nomic-embed-text         # the embedding model
+cd api && python index_docs.py       # index the docs
+```
+
+Then ask, in the browser at `/ask` or directly:
+
+```bash
+curl -s http://localhost:8000/ask -H 'content-type: application/json' \
+  -d '{"question":"Why is the eval suite not run in CI?"}'
+```
+
+Every answer carries the passages behind it, with their similarity scores, precise enough to go and check — `api/README.md > api > CI > What CI cannot cover`. Indexing is a separate command, so re-indexing after editing a document takes effect on the next question with no restart.
+
+It is deliberately the naive version — vector similarity, a fixed four passages, no keyword search or reranking — so the failure modes stay visible. Ask it "Name one sea" and it still retrieves four passages, none relevant.
 
 ## Tests
 

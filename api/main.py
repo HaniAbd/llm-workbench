@@ -7,9 +7,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from openai import OpenAI, OpenAIError
+from psycopg import OperationalError
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 import prompts
+from answering import Answer, AnsweringError, answer_question
 from classification import ClassificationError, ClassificationResult, classify
 from tracing import chat_span
 
@@ -174,3 +176,55 @@ def classify_ticket(req: ClassifyRequest):
         ) from exc
 
     return ClassificationResponse(**result.model_dump(), trace=captured.trace())
+
+
+# --- question answering over the repo's own docs ---------------------------
+
+
+class AskRequest(BaseModel):
+    # Same rule as /classify: a blank question is a validation error, decided
+    # here rather than sent to an embedding model and then to the LLM.
+    question: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class AskResponse(Answer):
+    """The answer, the passages behind it, and the development trace."""
+
+    trace: dict[str, Any]
+
+
+@app.post("/ask", response_model=AskResponse)
+def ask(req: AskRequest):
+    """Answer from the indexed documentation. Not streamed: the sources are
+    part of the result and are only known once retrieval has finished.
+
+    Reads the index per request, so `python index_docs.py` takes effect on the
+    next question with no restart.
+    """
+    captured = None
+    try:
+        with chat_span(MODEL) as span:
+            captured = span
+            result = answer_question(client, MODEL, req.question, span)
+    except AnsweringError as exc:
+        raise HTTPException(
+            status_code=502, detail=_failure(captured, str(exc))
+        ) from exc
+    except OpenAIError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=_failure(captured, f"provider call failed: {type(exc).__name__}"),
+        ) from exc
+    except OperationalError as exc:
+        # The index lives in Postgres; if it is not up, say so rather than
+        # returning an answer with no sources behind it.
+        raise HTTPException(
+            status_code=503,
+            detail=_failure(
+                captured,
+                "document index unavailable - is Postgres running? "
+                "(docker compose up -d, then python index_docs.py)",
+            ),
+        ) from exc
+
+    return AskResponse(**result.model_dump(), trace=captured.trace())

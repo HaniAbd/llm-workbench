@@ -55,6 +55,11 @@ class ChatSpan:
     messages_sent: list[dict] | None = None
     raw_output: str | None = None
 
+    # What retrieval found, and how well each passage matched. Kept beside
+    # messages_sent because it answers a different question: not "what was the
+    # model told" but "what was considered, and was any of it any good".
+    retrieved: list[dict] | None = None
+
     # Ordered, typed steps. This is the growth path: retrieval, tool calls and
     # agent steps append here without changing any field above or any consumer
     # that does not know about them.
@@ -90,6 +95,7 @@ class ChatSpan:
             "finish_reason": self.finish_reason,
             "error": self.error,
             "messages_sent": self.messages_sent,
+            "retrieved": self.retrieved,
             "raw_output": self.raw_output,
             "events": self.events,
         }
