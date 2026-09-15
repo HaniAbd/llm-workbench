@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Nav from "./components/Nav";
+import { RetrievalConfigProvider } from "./components/RetrievalConfig";
 import { TraceProvider } from "./components/TraceDrawer";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
@@ -29,10 +30,12 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`dark ${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="flex min-h-full flex-col bg-background text-foreground">
-        <TraceProvider>
-          <Nav />
-          {children}
-        </TraceProvider>
+        <RetrievalConfigProvider>
+          <TraceProvider>
+            <Nav />
+            {children}
+          </TraceProvider>
+        </RetrievalConfigProvider>
       </body>
     </html>
   );

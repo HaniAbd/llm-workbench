@@ -113,6 +113,14 @@ A retrieval run also records `retrieval_digest` (the knobs) and `index_digest` (
 
 Knobs are collected by introspection over module constants in `answering` and `embeddings`, so adding one needs no edit — a hand-maintained list is exactly the gap that looks covered.
 
+#### The similarity floor
+
+One definition: `SIMILARITY_FLOOR` in `api/answering.py`, published at `GET /retrieval/config`, read by the front end **at runtime**. It is not a response schema, so it stays out of the generated types — and baking it in at build time would be the same bug the split caused, just slower to surface.
+
+The UI previously kept its own `WEAK_MATCH_BELOW = 0.55` against the API's `0.52` and so contradicted it in between (measured: a question answered on 0.528 that the UI called weak). With no floor readable, scores are shown **with no verdict** and the UI says so rather than falling back to a number.
+
+Since the floor gates only the top passage, an answered result has cleared it by definition; the banner therefore reports how many *supporting* passages fell below it, not a second opinion on the answer.
+
 #### Generated API types
 
 `api/openapi.json` and `web/app/lib/api.generated.ts` are generated from the pydantic models and **committed** — never hand-edited. `web/app/lib/api.ts` only aliases them; it declares no shapes.

@@ -1,11 +1,5 @@
 import type { components } from "./api.generated";
 
-/** Below this, a retrieved passage is shown as a weak match. Measured on this
- *  corpus: questions the docs cover score 0.62-0.72, "Name one sea" scores
- *  0.466-0.478. 0.55 sits in the gap. Defined once because the ask page's
- *  banner and the trace panel's bars must agree about what "weak" means. */
-export const WEAK_MATCH_BELOW = 0.55;
-
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 /** Every shape below is an alias onto `api.generated.ts`, which is generated

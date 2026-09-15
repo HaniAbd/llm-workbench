@@ -1,6 +1,9 @@
+"use client";
+
 import { Clock, Coins, FileText, Sparkles, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { WEAK_MATCH_BELOW, type Trace, type TraceEvent } from "../lib/api";
+import type { Trace, TraceEvent } from "../lib/api";
+import { isBelowFloor, useSimilarityFloor } from "./RetrievalConfig";
 import { Label } from "./Notice";
 
 /** The contents of a trace, laid out for the drawer.
@@ -8,7 +11,10 @@ import { Label } from "./Notice";
  *  Nothing here is markdown-rendered. Passages, sent messages and raw output
  *  are records of what actually passed through the system, and a trace that
  *  reformats them is not showing you what happened. See Markdown.tsx for the
- *  line and why it sits there. */
+ *  line and why it sits there.
+ *
+ *  Passage scores are coloured against the API's own similarity floor. With no
+ *  floor known they stay neutral rather than borrowing a number from here. */
 
 function Stat({
   icon: Icon,
@@ -79,6 +85,7 @@ function EventRow({ event }: { event: TraceEvent }) {
 }
 
 export default function TraceBody({ trace }: { trace: Trace }) {
+  const { floor } = useSimilarityFloor();
   return (
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-2 gap-x-4 gap-y-3.5 sm:grid-cols-3">
@@ -102,17 +109,27 @@ export default function TraceBody({ trace }: { trace: Trace }) {
       </div>
 
       {trace.retrieved && trace.retrieved.length > 0 && (
-        <Section title={`retrieved · ${trace.retrieved.length} passages, best first`}>
+        <Section
+          title={
+            floor === null
+              ? `retrieved · ${trace.retrieved.length} passages, best first`
+              : `retrieved · ${trace.retrieved.length} passages, best first · floor ${floor}`
+          }
+        >
           <div className="flex flex-col gap-3">
             {trace.retrieved.map((r, i) => {
-              const weak = r.score < WEAK_MATCH_BELOW;
+              const weak = isBelowFloor(r.score, floor);
               return (
                 <div key={i} className="flex flex-col gap-1.5">
                   <div className="flex items-center gap-2">
                     <span
                       className={cn(
                         "w-12 shrink-0 font-mono text-xs",
-                        weak ? "text-warn" : "text-ok",
+                        floor === null
+                          ? "text-foreground"
+                          : weak
+                            ? "text-warn"
+                            : "text-ok",
                       )}
                     >
                       {r.score.toFixed(3)}
@@ -121,7 +138,7 @@ export default function TraceBody({ trace }: { trace: Trace }) {
                       <span
                         className={cn(
                           "block h-full rounded-full transition-[width] duration-500 ease-out",
-                          weak ? "bg-warn" : "bg-ok",
+                          floor === null ? "bg-primary" : weak ? "bg-warn" : "bg-ok",
                         )}
                         style={{ width: `${Math.max(0, Math.min(1, r.score)) * 100}%` }}
                       />

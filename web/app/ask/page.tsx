@@ -12,8 +12,9 @@ import { cn } from "@/lib/utils";
 import Composer from "../components/Composer";
 import { Label, Notice } from "../components/Notice";
 import Markdown from "../components/Markdown";
+import { isBelowFloor, useSimilarityFloor } from "../components/RetrievalConfig";
 import { TraceTrigger } from "../components/TraceDrawer";
-import { API_BASE, WEAK_MATCH_BELOW, type AskResult, type Trace } from "../lib/api";
+import { API_BASE, type AskResult, type Trace } from "../lib/api";
 
 type Outcome =
   | { kind: "ok"; result: AskResult }
@@ -42,6 +43,9 @@ const EXAMPLES = [
 ];
 
 export default function AskPage() {
+  // The floor comes from the API that enforces it, not from a number kept
+  // here. See components/RetrievalConfig.tsx.
+  const { floor } = useSimilarityFloor();
   const [question, setQuestion] = useState("");
   const [asked, setAsked] = useState("");
   const [outcome, setOutcome] = useState<Outcome | null>(null);
@@ -161,10 +165,12 @@ export default function AskPage() {
               {outcome?.kind === "ok" &&
                 (() => {
                   const { answered, answer, sources, trace } = outcome.result;
-                  const best = sources.length
-                    ? Math.max(...sources.map((s) => s.score))
-                    : 0;
-                  const weak = sources.length === 0 || best < WEAK_MATCH_BELOW;
+                  // The top passage cleared the API's floor by definition -
+                  // below it the request would have been refused. What is
+                  // worth saying is how much of the SUPPORTING material did
+                  // not clear it.
+                  const belowFloor = sources.filter((s) => isBelowFloor(s.score, floor));
+                  const thinSupport = floor !== null && belowFloor.length > 0;
                   const quoted = sources.filter((s) => quotedIn(answer, s.heading_path));
                   const citesNothingReal =
                     answered && looksLikeACitation(answer) && quoted.length === 0;
@@ -179,14 +185,14 @@ export default function AskPage() {
                         </Notice>
                       )}
 
-                      {weak && sources.length > 0 && (
-                        <Notice tone="warn" title="Weak match.">
-                          The best passage scored{" "}
-                          <span className="font-mono">{best.toFixed(3)}</span>,
-                          below <span className="font-mono">{WEAK_MATCH_BELOW}</span>.
-                          Retrieval always returns four passages whether or not any
-                          is relevant, so the answer below may be built from
-                          unrelated text.
+                      {thinSupport && (
+                        <Notice tone="warn" title="Thin support.">
+                          <span className="font-mono">{belowFloor.length}</span> of{" "}
+                          <span className="font-mono">{sources.length}</span> passages
+                          scored below{" "}
+                          <span className="font-mono">{floor}</span>, the floor this
+                          API refuses on. The top passage cleared it, so the answer
+                          rests mainly on that one.
                         </Notice>
                       )}
 
@@ -236,7 +242,11 @@ export default function AskPage() {
                               <span
                                 className={cn(
                                   "w-12 shrink-0 font-mono text-xs",
-                                  s.score < WEAK_MATCH_BELOW ? "text-warn" : "text-ok",
+                                  floor === null
+                                    ? "text-foreground"
+                                    : isBelowFloor(s.score, floor)
+                                      ? "text-warn"
+                                      : "text-ok",
                                 )}
                               >
                                 {s.score.toFixed(3)}
@@ -245,7 +255,11 @@ export default function AskPage() {
                                 <span
                                   className={cn(
                                     "block h-full rounded-full transition-[width] duration-700 ease-out",
-                                    s.score < WEAK_MATCH_BELOW ? "bg-warn" : "bg-ok",
+                                    floor === null
+                                      ? "bg-primary"
+                                      : isBelowFloor(s.score, floor)
+                                        ? "bg-warn"
+                                        : "bg-ok",
                                   )}
                                   style={{
                                     width: `${Math.max(0, Math.min(1, s.score)) * 100}%`,
@@ -271,6 +285,9 @@ export default function AskPage() {
                           answer claims. A tick means the exact path appears in the
                           answer text; a passage can still have been used without
                           being quoted.
+                          {floor === null
+                            ? " The API's similarity floor could not be read, so scores are shown without a verdict."
+                            : ` Scores are judged against the API's floor of ${floor}.`}
                         </p>
                       </div>
 

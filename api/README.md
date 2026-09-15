@@ -184,6 +184,20 @@ A `200` is not automatically a classification. Gibberish, spam and off-topic tex
 
 When the flag is `false` the other four fields are fixed constants (`other` / `low` / `neutral` / `false`) rather than whatever the model said. That is deliberate: off-topic prose was measured coming back as `category: "billing"`, which would route junk to the billing queue.
 
+### The similarity floor has one definition
+
+`SIMILARITY_FLOOR` lives in `api/answering.py` and is published at `GET /retrieval/config`. **The front end reads it from there at runtime** rather than keeping a number of its own.
+
+It used to keep one: `WEAK_MATCH_BELOW = 0.55` in `web/app/lib/api.ts`, set independently of the API's `0.52`. Nothing reconciled them, so the interface contradicted the API in the band between. A measured example — *"What does a finish reason of length mean?"* is answered on a top score of **0.528**: the API accepted it, the interface called it a weak match.
+
+This is not a response schema, so it is deliberately outside the generated types. It is a property of the running server, and a value compiled into the front end would be the same bug again, just slower to notice.
+
+When the floor cannot be read — the API is down, or it is published under a key this build does not recognise — the interface shows scores **with no verdict at all** and says so. Nothing falls back to a hardcoded number; a wrong threshold presented confidently is the thing being fixed.
+
+Because the floor gates only the *top* passage, an answered result has by definition cleared it. So the interface no longer claims the answer is weak; it reports how much of the **supporting** material fell below the floor:
+
+> **Thin support.** 2 of 4 passages scored below 0.52, the floor this API refuses on. The top passage cleared it, so the answer rests mainly on that one.
+
 ### Untrusted input
 
 Ticket text is treated as data, never instructions. The system prompt says so explicitly, and the grammar is the backstop — injected text cannot emit a value outside the enums or a field outside the schema no matter what it says. Verified against instruction-override, a competing schema, a forged `SYSTEM:` turn, and an injection buried inside a real ticket: every one returned a valid in-enum object.
