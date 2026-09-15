@@ -1,5 +1,6 @@
 "use client";
 
+import { Fragment } from "react";
 import { Clock, Coins, FileText, Sparkles, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Trace, TraceEvent } from "../lib/api";
@@ -61,24 +62,143 @@ const Pre = ({ children }: { children: React.ReactNode }) => (
   </pre>
 );
 
-/** Renders any step. Fields beyond at_ms/kind are shown generically, so a
- *  future tool call or agent step needs no change here. */
-function EventRow({ event }: { event: TraceEvent }) {
-  const { at_ms, kind, ...rest } = event;
-  const extra = Object.entries(rest);
-  return (
-    <li className="relative flex gap-3 pl-4">
-      <span className="absolute left-0 top-[7px] size-1.5 rounded-full bg-primary/70 ring-4 ring-primary/10" />
-      <span className="w-14 shrink-0 text-right font-mono text-[11px] text-muted-foreground">
-        {at_ms}ms
+/** One field's value, formatted by what it actually is.
+ *
+ *  Nothing here knows any step's shape. It dispatches on the runtime type, so
+ *  a tool call or an agent step carrying fields this build has never seen
+ *  renders the same way as the ones that exist today. Objects nest one level
+ *  before falling back to JSON, which keeps a deep payload from pushing the
+ *  column apart. */
+function Value({ value, depth = 0 }: { value: unknown; depth?: number }) {
+  if (value === null || value === undefined) {
+    return <span className="text-muted-foreground/60">—</span>;
+  }
+  if (typeof value === "boolean") {
+    return (
+      <span className={cn("font-mono", value ? "text-ok" : "text-muted-foreground")}>
+        {String(value)}
       </span>
-      <div className="min-w-0 pb-2">
-        <span className="font-mono text-xs text-foreground">{kind}</span>
-        {extra.length > 0 && (
-          <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all font-mono text-[11px] text-muted-foreground">
-            {extra.map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join("\n")}
-          </pre>
+    );
+  }
+  if (typeof value === "number") {
+    return <span className="font-mono tabular-nums text-foreground">{value}</span>;
+  }
+  if (typeof value === "string") {
+    return <span className="break-words text-foreground/90">{value}</span>;
+  }
+  if (Array.isArray(value)) {
+    const scalars = value.every((v) => v === null || typeof v !== "object");
+    if (scalars) {
+      return (
+        <span className="font-mono text-foreground/90">
+          {value.length === 0 ? "[]" : value.map((v) => String(v)).join(", ")}
+        </span>
+      );
+    }
+    return <Json value={value} />;
+  }
+  if (depth < 1) {
+    return <Fields fields={value as Record<string, unknown>} depth={depth + 1} />;
+  }
+  return <Json value={value} />;
+}
+
+const Json = ({ value }: { value: unknown }) => (
+  <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/80">
+    {JSON.stringify(value, null, 1)}
+  </pre>
+);
+
+/** A step's fields as aligned name/value pairs rather than a dumped blob.
+ *
+ *  Two columns, so the names form a left edge and the values a second one:
+ *  the pairs can be read without parsing `key: value` out of a line. */
+function Fields({
+  fields,
+  depth = 0,
+}: {
+  fields: Record<string, unknown>;
+  depth?: number;
+}) {
+  const entries = Object.entries(fields);
+  if (entries.length === 0) return null;
+  return (
+    <dl
+      className={cn(
+        "grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[11px]",
+        depth > 0 && "mt-1 border-l border-border/60 pl-2.5",
+      )}
+    >
+      {entries.map(([name, value]) => (
+        <Fragment key={name}>
+          <dt className="font-mono text-muted-foreground">{name}</dt>
+          <dd className="min-w-0">
+            <Value value={value} depth={depth} />
+          </dd>
+        </Fragment>
+      ))}
+    </dl>
+  );
+}
+
+/** One step on the timeline.
+ *
+ *  Three columns, fixed: elapsed time, the rail, then the step. The time
+ *  column is a fixed width with tabular figures, so 0ms and 10006ms occupy the
+ *  same space and the numbers line up instead of drifting as they grow.
+ *
+ *  The gap from the previous step is printed beneath the absolute time, and
+ *  only when there is one - reading a 9-second pause should not require
+ *  subtracting two numbers, and a step that lands in the same millisecond as
+ *  the last should not claim otherwise. */
+function Step({
+  event,
+  previous,
+  first,
+  last,
+}: {
+  event: TraceEvent;
+  previous?: TraceEvent;
+  first: boolean;
+  last: boolean;
+}) {
+  const { at_ms, kind, ...fields } = event;
+  const gap = previous ? at_ms - previous.at_ms : 0;
+
+  return (
+    <li className="grid grid-cols-[4.25rem_0.75rem_minmax(0,1fr)] gap-x-2.5">
+      <div className="pt-px text-right">
+        <div className="font-mono text-[11px] tabular-nums text-foreground">
+          {at_ms}
+          <span className="text-muted-foreground/70">ms</span>
+        </div>
+        {gap > 0 && (
+          <div className="font-mono text-[10px] tabular-nums text-muted-foreground/60">
+            +{gap}
+          </div>
         )}
+      </div>
+
+      {/* The rail is one continuous line through every dot, stopped at the
+          first and last so the sequence reads as bounded rather than trailing
+          off. */}
+      <div className="relative flex justify-center">
+        <span
+          aria-hidden
+          className={cn(
+            "absolute w-px bg-border",
+            first && last && "hidden",
+            first && !last && "top-[7px] bottom-0",
+            !first && !last && "inset-y-0",
+            last && !first && "top-0 h-[7px]",
+          )}
+        />
+        <span className="relative mt-[4px] size-1.5 shrink-0 rounded-full bg-primary ring-[3px] ring-card" />
+      </div>
+
+      <div className={cn("min-w-0", last ? "pb-0" : "pb-3.5")}>
+        <div className="font-mono text-xs text-foreground">{kind}</div>
+        <Fields fields={fields} />
       </div>
     </li>
   );
@@ -178,11 +298,17 @@ export default function TraceBody({ trace }: { trace: Trace }) {
 
       {trace.events.length > 0 && (
         <Section title="steps">
-          <ul className="flex flex-col border-l border-border/70 pl-1">
+          <ol className="flex flex-col">
             {trace.events.map((e, i) => (
-              <EventRow key={i} event={e} />
+              <Step
+                key={i}
+                event={e}
+                previous={trace.events[i - 1]}
+                first={i === 0}
+                last={i === trace.events.length - 1}
+              />
             ))}
-          </ul>
+          </ol>
         </Section>
       )}
     </div>
