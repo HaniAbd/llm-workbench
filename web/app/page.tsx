@@ -1,6 +1,15 @@
 "use client";
 
 import { useState } from "react";
+import {
+  Conversation,
+  ConversationContent,
+  ConversationEmptyState,
+  ConversationScrollButton,
+} from "@/components/ai-elements/conversation";
+import { cn } from "@/lib/utils";
+import Composer from "./components/Composer";
+import { Label, Notice } from "./components/Notice";
 import TracePanel from "./components/TracePanel";
 import { API_BASE, readSSE, type Trace } from "./lib/api";
 
@@ -85,69 +94,80 @@ export default function Home() {
   }
 
   return (
-    <div className="flex flex-1 flex-col items-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex w-full max-w-3xl flex-1 flex-col gap-6 px-6 py-10">
-        <h1 className="text-2xl font-semibold tracking-tight text-black dark:text-zinc-50">
-          Chat
-        </h1>
+    <div className="flex flex-1 flex-col">
+      {/* Elements' Conversation: sticks to the bottom as tokens arrive and
+          offers a scroll-back button once you leave it. */}
+      <Conversation className="flex-1">
+        <ConversationContent className="mx-auto w-full max-w-3xl px-5 pb-48 pt-8">
+          {messages.length === 0 ? (
+            <ConversationEmptyState
+              className="py-24"
+              title="Nothing asked yet"
+              description="Answers come from the model alone. Open the trace under any reply to see what was sent and where the time went."
+            />
+          ) : (
+            <div className="flex flex-col gap-7">
+              {messages.map((m, i) => {
+                const streaming = sending && i === messages.length - 1;
+                return (
+                  <div key={i} className="flex flex-col gap-2">
+                    <Label
+                      className={m.role === "user" ? "text-primary/80" : undefined}
+                    >
+                      {m.role}
+                    </Label>
 
-        <div className="flex flex-1 flex-col gap-4">
-          {messages.length === 0 && (
-            <p className="text-zinc-500 dark:text-zinc-400">
-              Ask something to get started.
-            </p>
-          )}
+                    <p
+                      className={cn(
+                        "whitespace-pre-wrap leading-7",
+                        m.role === "user"
+                          ? "text-foreground/90"
+                          : "text-foreground",
+                      )}
+                    >
+                      {m.content}
+                      {m.finishReason === "length" && (
+                        <span className="text-warn">…</span>
+                      )}
+                      {/* The caret is the only motion during streaming: it
+                          marks that tokens are still arriving. */}
+                      {streaming && (
+                        <span className="ml-0.5 inline-block h-[1.1em] w-[2px] translate-y-[2px] animate-pulse bg-primary align-baseline" />
+                      )}
+                    </p>
 
-          {messages.map((m, i) => (
-            <div key={i} className="flex flex-col gap-1">
-              <span className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                {m.role}
-              </span>
-              <p className="whitespace-pre-wrap leading-7 text-black dark:text-zinc-100">
-                {m.content}
-                {m.finishReason === "length" && (
-                  <span className="text-amber-700 dark:text-amber-500">…</span>
-                )}
-                {sending && i === messages.length - 1 && (
-                  <span className="animate-pulse">▌</span>
-                )}
-              </p>
+                    {m.finishReason === "length" && (
+                      <Notice tone="warn" title="Cut off.">
+                        The model hit its output token limit, so this reply is
+                        incomplete.
+                      </Notice>
+                    )}
 
-              {m.finishReason === "length" && (
-                <p className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-800 dark:text-amber-400">
-                  Cut off — the model hit its output token limit. This reply is
-                  incomplete.
-                </p>
-              )}
+                    {m.usage && (
+                      <div className="flex gap-4 font-mono text-[11px] text-muted-foreground">
+                        <span>in {m.usage.inputTokens}</span>
+                        <span>out {m.usage.outputTokens}</span>
+                      </div>
+                    )}
 
-              {m.usage && (
-                <p className="font-mono text-xs text-zinc-500 dark:text-zinc-400">
-                  input {m.usage.inputTokens} · output {m.usage.outputTokens}
-                </p>
-              )}
-
-              {m.trace && <TracePanel trace={m.trace} />}
+                    {m.trace && <TracePanel trace={m.trace} />}
+                  </div>
+                );
+              })}
             </div>
-          ))}
-        </div>
+          )}
+        </ConversationContent>
+        <ConversationScrollButton className="bottom-40" />
+      </Conversation>
 
-        <form onSubmit={send} className="flex gap-2">
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Say something…"
-            disabled={sending}
-            className="flex-1 rounded-full border border-black/[.08] bg-white px-5 py-3 text-black outline-none placeholder:text-zinc-400 focus:border-black/[.3] disabled:opacity-50 dark:border-white/[.145] dark:bg-black dark:text-zinc-50 dark:focus:border-white/[.4]"
-          />
-          <button
-            type="submit"
-            disabled={sending || !input.trim()}
-            className="rounded-full bg-foreground px-6 py-3 font-medium text-background transition-colors hover:bg-[#383838] disabled:opacity-40 dark:hover:bg-[#ccc]"
-          >
-            {sending ? "…" : "Send"}
-          </button>
-        </form>
-      </main>
+      <Composer
+        value={input}
+        onChange={setInput}
+        onSubmit={send}
+        busy={sending}
+        placeholder="Ask the model something…"
+        hint="Enter to send · Shift+Enter for a new line"
+      />
     </div>
   );
 }

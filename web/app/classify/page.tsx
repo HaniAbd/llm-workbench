@@ -1,6 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { Loader } from "@/components/ai-elements/loader";
+import { cn } from "@/lib/utils";
+import { Label, Notice } from "../components/Notice";
 import TracePanel from "../components/TracePanel";
 import { API_BASE, type Classification, type Trace } from "../lib/api";
 
@@ -93,105 +96,101 @@ export default function ClassifyPage() {
   }
 
   return (
-    <div className="flex flex-1 flex-col items-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex w-full max-w-3xl flex-1 flex-col gap-5 px-6 py-10">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-black dark:text-zinc-50">
-            Classify a ticket
-          </h1>
-          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-            Paste ticket text. Open the trace on any result to see what was sent
-            and what came back.
-          </p>
-        </div>
+    <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 px-5 py-8">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Classify a ticket</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Schema-constrained output: the model cannot emit a value outside the
+          enums. Open the trace to see what it actually returned.
+        </p>
+      </div>
 
-        <div className="flex flex-wrap gap-2">
-          {PRESETS.map((p) => (
-            <button
-              key={p.label}
-              type="button"
-              title={p.shows}
-              onClick={() => {
-                setText(p.text);
-                setOutcome(null);
-              }}
-              className="rounded-full border border-black/[.08] px-3 py-1 text-xs text-zinc-700 transition-colors hover:bg-black/[.04] dark:border-white/[.145] dark:text-zinc-300 dark:hover:bg-white/[.06]"
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-
-        <form onSubmit={submit} className="flex flex-col gap-3">
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            rows={5}
-            className="w-full rounded border border-black/[.08] bg-white p-3 font-mono text-sm text-black outline-none focus:border-black/[.3] dark:border-white/[.145] dark:bg-black dark:text-zinc-50 dark:focus:border-white/[.4]"
-          />
+      <div className="flex flex-wrap gap-2">
+        {PRESETS.map((p) => (
           <button
-            type="submit"
-            disabled={busy}
-            className="self-start rounded-full bg-foreground px-6 py-2.5 text-sm font-medium text-background transition-colors hover:bg-[#383838] disabled:opacity-40 dark:hover:bg-[#ccc]"
-          >
-            {busy ? "classifying…" : "Classify"}
-          </button>
-        </form>
-
-        {outcome?.kind === "rejected" && (
-          <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-400">
-            <strong className="font-medium">Rejected (422).</strong> {outcome.message}
-            <div className="mt-1 text-xs opacity-80">
-              Validation refused this before any model call — no tokens spent, so
-              there is no trace to show.
-            </div>
-          </div>
-        )}
-
-        {outcome?.kind === "unreachable" && (
-          <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-400">
-            <strong className="font-medium">Could not reach the API.</strong>{" "}
-            {outcome.message}
-            <div className="mt-1 text-xs opacity-80">Is it running on {API_BASE}?</div>
-          </div>
-        )}
-
-        {outcome?.kind === "failed" && (
-          <div className="flex flex-col gap-2">
-            <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-400">
-              <strong className="font-medium">Failed (502).</strong> {outcome.message}
-            </div>
-            {outcome.trace && <TracePanel trace={outcome.trace} />}
-          </div>
-        )}
-
-        {outcome?.kind === "ok" && (
-          <div className="flex flex-col gap-2">
-            {!outcome.result.is_support_ticket && (
-              <div className="rounded border border-zinc-400/40 bg-zinc-400/10 px-3 py-2 text-sm text-zinc-700 dark:text-zinc-300">
-                <strong className="font-medium">Not a support ticket.</strong> The
-                fields below are the server&apos;s defaults, not the model&apos;s
-                answer — see{" "}
-                <code className="font-mono">normalised_non_ticket</code> in the
-                trace for what it actually said.
-              </div>
+            key={p.label}
+            type="button"
+            title={p.shows}
+            onClick={() => {
+              setText(p.text);
+              setOutcome(null);
+            }}
+            className={cn(
+              "rounded-full border px-3.5 py-1.5 text-xs transition-all active:scale-95",
+              text === p.text
+                ? "border-primary/50 bg-primary/10 text-foreground"
+                : "border-border bg-card/60 text-muted-foreground hover:border-primary/40 hover:text-foreground",
             )}
-            <div className="grid grid-cols-2 gap-px overflow-hidden rounded border border-black/[.08] bg-black/[.08] sm:grid-cols-5 dark:border-white/[.145] dark:bg-white/[.145]">
-              {FIELDS.map((f) => (
-                <div key={f} className="bg-white p-3 dark:bg-black">
-                  <div className="text-[10px] uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                    {f.replace(/_/g, " ")}
-                  </div>
-                  <div className="mt-0.5 font-mono text-sm text-black dark:text-zinc-100">
-                    {String(outcome.result[f])}
-                  </div>
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      <form onSubmit={submit} className="flex flex-col gap-3">
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={5}
+          className="w-full resize-none rounded-xl border border-border bg-card p-3.5 font-mono text-sm leading-relaxed text-foreground outline-none transition-colors focus:border-primary/60"
+        />
+        <button
+          type="submit"
+          disabled={busy}
+          className="flex items-center gap-2 self-start rounded-xl bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-all enabled:hover:brightness-110 enabled:active:scale-95 disabled:bg-muted disabled:text-muted-foreground"
+        >
+          {busy && <Loader size={14} />}
+          {busy ? "classifying…" : "Classify"}
+        </button>
+      </form>
+
+      {outcome?.kind === "rejected" && (
+        <Notice tone="warn" title="Rejected (422).">
+          {outcome.message} Validation refused this before any model call — no
+          tokens spent, so there is no trace to show.
+        </Notice>
+      )}
+
+      {outcome?.kind === "unreachable" && (
+        <Notice tone="danger" title="Could not reach the API.">
+          {outcome.message} Is it running on {API_BASE}?
+        </Notice>
+      )}
+
+      {outcome?.kind === "failed" && (
+        <div className="flex flex-col gap-3">
+          <Notice tone="danger" title="Failed (502).">
+            {outcome.message}
+          </Notice>
+          {outcome.trace && <TracePanel trace={outcome.trace} />}
+        </div>
+      )}
+
+      {outcome?.kind === "ok" && (
+        <div className="flex flex-col gap-4">
+          {!outcome.result.is_support_ticket && (
+            <Notice tone="info" title="Not a support ticket.">
+              The fields below are the server&apos;s defaults, not the
+              model&apos;s answer — see{" "}
+              <code className="font-mono">normalised_non_ticket</code> in the
+              trace for what it actually said.
+            </Notice>
+          )}
+
+          <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-5">
+            {FIELDS.map((f) => (
+              <div key={f} className="bg-card p-3.5">
+                <Label>{f.replace(/_/g, " ")}</Label>
+                <div className="mt-1 font-mono text-sm text-foreground">
+                  {String(outcome.result[f])}
                 </div>
-              ))}
-            </div>
-            <TracePanel trace={outcome.result.trace} />
+              </div>
+            ))}
           </div>
-        )}
-      </main>
-    </div>
+
+          <TracePanel trace={outcome.result.trace} />
+        </div>
+      )}
+    </main>
   );
 }
