@@ -139,6 +139,18 @@ Both endpoints return a `trace` beside their normal output — a field on `/clas
 
 `events` is the growth path — retrieval, tool calls and agent steps append there without changing any existing field, and `TracePanel` renders unknown kinds generically. `normalised_non_ticket` already shows what the model said before the server replaced it with constants.
 
+#### The agent loop
+
+`api/agent.py` is `/agent`: a hand-written tool-calling loop over `answering.answer_question` and `classification.classify`, both wrapped unchanged. **No orchestration framework, deliberately** — a later step rebuilds it on one and the comparison is the point.
+
+It is bounded by `MAX_STEPS`, `TIME_BUDGET_S` and `MAX_REPEATED_CALLS`, and every bound is a **reported `stop_reason` on a 200**, never an exception or a silent stop. `StopReason` is a `Literal`, so the values reach the generated TypeScript; a test asserts the published enum matches the code.
+
+Nothing the model does raises. An unknown tool, unparseable or wrongly-typed arguments, an undeclared key, a failing capability and an unreachable index all become tool results carrying a leading signal (`NO_SUCH_TOOL`, `BAD_ARGUMENTS`, `TOOL_FAILED`, `INDEX_UNAVAILABLE`) for the model to act on. `NOT_IN_DOCS` is `answering.REFUSAL_SENTINEL` reused, not a second name for it. Note an unreachable index is a 200 here while `/ask` returns 503; only the loop's own model call failing is a 502.
+
+**Malformed arguments are rejected, never coerced**, even where the intent is obvious — a loop that patches the model's mistakes says nothing about the model. The measured failures are documented in `api/README.md` and should be updated, not tuned away: argument quality swings on one line of the prompt (1/9 malformed with it, 6/15 without), and two-part requests lose their second half 3 times in 5, with the skipped half fabricated.
+
+One agent run writes **several** `llm_call` log lines — each tool that calls the model opens its own span — while the returned trace covers the whole run, with run-total token counts and one `tool_call` event per capability invoked.
+
 Transport is **inline, deliberately**: a caller only ever sees its own call, so there is no trace store to query and no id to guess. The trade is that every response carries the full rendered prompt — fine locally, the first thing to revisit if this leaves localhost. A `502` carries a trace; a `422` does not, because nothing was called.
 
 #### Prompt store

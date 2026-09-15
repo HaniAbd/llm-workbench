@@ -1,6 +1,6 @@
 # api
 
-A FastAPI service that fronts a local Ollama model. Three endpoints: `POST /chat` streams prose over Server-Sent Events, `POST /classify` returns a validated object for one task, and `POST /ask` answers questions from this repository's own documentation. Every call leaves one structured log line.
+A FastAPI service that fronts a local Ollama model. Four endpoints: `POST /chat` streams prose over Server-Sent Events, `POST /classify` returns a validated object for one task, `POST /ask` answers questions from this repository's own documentation, and `POST /agent` lets the model choose between the last two and use them in sequence. Every model call leaves one structured log line.
 
 It exists so the browser never talks to the model directly: the system prompt, sampling settings and the conversation's shape stay on the server, where a client cannot change them.
 
@@ -13,6 +13,7 @@ Two files:
 | `prompts/` | Prompt text as `.md` files, plus the loader that identifies them |
 | `chunking.py`, `embeddings.py`, `store.py` | The document index: splitting markdown, embedding it, storing and searching it in pgvector |
 | `answering.py`, `index_docs.py` | `/ask` and the indexing CLI |
+| `agent.py` | `/agent`: the hand-written tool-calling loop, its bounds and its failure signals |
 | `tracing.py` | Observability seam. Knows nothing about OpenAI or FastAPI |
 
 ## Prerequisites
@@ -539,6 +540,172 @@ The values come from `GET /retrieval/config` on the **running server**, not by i
 #### Attributing a retrieval run
 
 The `/ask` prompt is rendered with the retrieved passages, so the `prompt_id` the API returns **differs for every question** — it identifies the request, not the prompt. The suite therefore records the digest of the prompt *template*, before substitution, as `answer_question@…~template`, and counts the rendered variants as a sanity check.
+
+## `POST /agent` — choosing capabilities
+
+`/ask` and `/classify` each do one thing, and the caller picks which. This
+endpoint hands both to the model as tools and lets it choose: which capability,
+in what order, and when it has enough to answer. It is the only endpoint that
+spans more than one model call.
+
+The loop is written out by hand in [agent.py](agent.py) — no orchestration
+framework, deliberately. A later step rebuilds the same behaviour on one, and
+that comparison is only worth anything if this version is fully visible.
+
+```bash
+curl -s localhost:8000/agent -H 'content-type: application/json' \
+  -d '{"question":"Here is a ticket: \"The app crashes when I open settings.\"
+       Classify it, then tell me what the docs say about tracing."}' | jq
+```
+
+```jsonc
+{
+  "answer": "...",
+  "stop_reason": "answered",
+  "model_calls": 3,
+  "tools_available": ["search_docs", "classify_ticket"],
+  "steps": [
+    {"n": 1, "tool": "classify_ticket", "arguments": {"text": "The app crashes…"},
+     "raw_arguments": "{\"text\":\"The app crashes…\"}",
+     "ok": true, "signal": null, "result": "{\"is_support_ticket\": true, …}"},
+    {"n": 2, "tool": "search_docs", "arguments": {"question": "tracing"},
+     "ok": false, "signal": "NOT_IN_DOCS", "result": "NOT_IN_DOCS: the …"}
+  ],
+  "trace": { "events": [ … ] }
+}
+```
+
+The capabilities are the existing modules, wrapped and otherwise untouched:
+`search_docs` is `answering.answer_question`, `classify_ticket` is
+`classification.classify`.
+
+### It has to terminate
+
+Three bounds, because a loop fails in three different ways. Each is a
+**reported outcome** — a `200` carrying `stop_reason` and every step taken so
+far — never a silent stop and never an exception.
+
+| `stop_reason` | bound | why it exists |
+| --- | --- | --- |
+| `answered` | — | the model replied in prose and asked for no tool |
+| `max_steps` | `MAX_STEPS = 6` | a model that keeps calling tools forever |
+| `time_budget` | `TIME_BUDGET_S = 180` | tools that are individually slow; `search_docs` is a whole retrieval-and-answer call |
+| `repeated_tool_call` | `MAX_REPEATED_CALLS = 2` | the same tool with byte-identical arguments, over and over — the classic small-model failure, and the one the other two bounds catch far too late |
+| `empty_response` | — | the model returned neither text nor a tool call |
+
+A run that hits a bound gets a plain sentence saying so, and nothing else.
+There is deliberately **no** final "now summarise what you have" call: that
+would hide the bound behind an answer, and an answer assembled after running
+out of room is the exact thing worth seeing as a failure.
+
+`stop_reason` is a `Literal`, so the five values reach `openapi.json` and from
+there the front end's TypeScript as a union. A test asserts the published enum
+and the bound messages agree with the code — a bound the caller cannot name is
+not a reported outcome.
+
+### Nothing the model does is a crash
+
+Every failure becomes an ordinary tool result, handed back as text so the model
+can act on it. The signal leads the string, because a small model reads the
+first token of a tool result far more reliably than a JSON field.
+
+| signal | when |
+| --- | --- |
+| `NOT_IN_DOCS` | retrieval found nothing. **Not a new name** — it is `answering.REFUSAL_SENTINEL`, the signal retrieval already publishes, reused rather than duplicated |
+| `BAD_ARGUMENTS` | arguments were unparseable, the wrong type, missing, or carried an undeclared key |
+| `NO_SUCH_TOOL` | the model named a tool that does not exist; the reply lists the ones that do |
+| `TOOL_FAILED` | the capability raised |
+| `INDEX_UNAVAILABLE` | Postgres is unreachable |
+
+Two consequences worth stating plainly:
+
+- **An unreachable index is a `200` here, not the `503` `/ask` returns.** The
+  model is told the index is down and expected to say so. Only the *loop's own*
+  model call failing is a `502`: without the model there is no loop.
+- **Malformed arguments are rejected, never repaired.** When the model sends
+  `{"question": {"type": "string", "value": "…"}}` the intent is obvious and
+  coercing it would be easy. It is reported instead, because a loop that
+  quietly patches the model's mistakes tells you nothing about the model.
+
+One pydantic model per tool is both the JSON Schema advertised and the
+validator applied — the same trick `classification.py` uses — so the two cannot
+describe different arguments. `extra="forbid"` is what makes an invented key a
+reported error rather than a silently dropped one.
+
+### What the model actually does
+
+Measured on `llama3.2`, not tuned until it looked good. Twenty questions
+covering documentation lookups, two-part requests, unanswerable questions,
+questions needing no tool at all, and one asking for a tool that does not
+exist.
+
+**What works.** All 20 runs terminated with `answered`; none hit a bound. It
+picks the right single tool essentially always. Its best behaviour is handling
+`NOT_IN_DOCS`: 7 of 7 times it said the documentation does not cover the
+question instead of answering from general knowledge.
+
+**It drops half of a two-part request.** Of five questions needing a
+classification *and* a lookup, only 2 used both tools. The other three
+classified the ticket, never called `search_docs` — and then answered the
+lookup half anyway, from invented knowledge. A second sample of six agreed:
+both tools used twice. Asked what the docs say about urgency, one run
+confidently described a keyword list (`"urgent"`, `"critical"`, …) that appears
+nowhere in this repository. **The failure is not
+that it stops early; it is that it fabricates the part it skipped.**
+
+**It cannot leave a tool alone.** Asked to "say hello in exactly three words"
+and "what is 2 + 2", it called `search_docs` both times.
+
+**Argument quality depends almost entirely on one line of the prompt.** The
+system prompt says every argument is a plain string, not an object describing
+one. With that line, 1 of 9 tool calls was malformed; with it removed, 6 of 15
+— roughly 40%. The characteristic failure is echoing the parameter's own schema
+back in place of a value. Rejection does help: the one malformed call was
+followed by a corrected retry.
+
+**It sometimes emits a protocol token as its answer.** The final answer is
+occasionally the bare string `NOT_IN_DOCS` — a signal the prompt taught it to
+recognise, parroted back as prose. This happens only on two-part requests
+(2 of 6; 0 of 6 single-part), which is the same confusion as above wearing a
+different hat: having classified the ticket, it treats the unanswered second
+half as a refusal. The loop reports it verbatim with `stop_reason: "answered"`,
+because that is what the model said. Detecting it would mean string-matching
+the model's prose and inventing a stop reason from a guess.
+
+**`NO_SUCH_TOOL` was never reached live.** Asked to use a `delete_repository`
+tool, the model did not invent the name — Ollama appears to constrain the
+function name to the advertised list. The path exists and is covered by a
+scripted test, because a different provider will not necessarily constrain it.
+
+### The trace covers the whole run
+
+Every step is in `trace.events`, using the extension point
+[tracing.py](tracing.py) reserved for it — `agent_start`, one `model_turn` per
+model call, one `tool_call` per capability invoked (with the tool, the parsed
+arguments, the **raw** argument string, `ok`, the signal and the result size),
+`bound_hit` when a bound fires, and `agent_stop` carrying `stop_reason`. No
+schema change was needed for any of it, and the panel renders kinds it has
+never seen.
+
+Two things differ from the single-call endpoints:
+
+- **Token counts are run totals**, summed across every model turn. Per-call
+  figures stay on the individual events.
+- **Each tool that calls the model opens its own span**, so it writes its own
+  `llm_call` log line exactly as a direct `/ask` or `/classify` request would.
+  One agent run therefore produces several log lines, not one.
+
+`trace.messages_sent` renders an assistant turn's `tool_calls` into its text,
+because `SentMessage` has no field for them; widening a model shared with
+`/ask` and `/classify` was not worth it when `steps[].raw_arguments` already
+carries the arguments verbatim.
+
+### What this does not do
+
+No human approval step, no MCP server, no front end — `/agent` is API-only for
+now. Tools within one model turn run in sequence, not concurrently. And nothing
+here retries a model that answers badly; the failures above are reported, not
+smoothed over.
 
 ## Prompts
 

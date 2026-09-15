@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 import prompts
 import store
+from agent import AgentError, AgentRun, run_agent
 from answering import Answer, AnsweringError, answer_question, retrieval_config
 from documents import Document, load_document
 from classification import ClassificationError, ClassificationResult, classify
@@ -291,3 +292,53 @@ def get_document(path: str):
     if document is None:
         raise HTTPException(status_code=404, detail=f"no indexed document at {path!r}")
     return document
+
+
+# --- the agent loop --------------------------------------------------------
+
+
+class AgentRequest(BaseModel):
+    # Same rule as /ask and /classify: blank input is decided here, before any
+    # model call.
+    question: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class AgentResponse(AgentRun):
+    """What the loop did, the steps it took, and the trace behind it."""
+
+    trace: TraceDocument
+
+
+@app.post("/agent", response_model=AgentResponse)
+def agent(req: AgentRequest):
+    """Answer by choosing capabilities, in sequence, until done or out of room.
+
+    Unlike /ask and /classify this endpoint spans several model calls, so its
+    trace covers a whole run: `events` holds one `model_turn` per call and one
+    `tool_call` per capability invoked, and the token counts are run totals.
+    Each tool that calls the model still opens its own span, so it also leaves
+    its own `llm_call` log line.
+
+    Note what is *not* an error here. A capability that fails - including the
+    index being unreachable, which /ask reports as a 503 - comes back as a tool
+    result the model is expected to read and act on, so the run continues and
+    returns 200. Only the loop's own model call failing is a 502: without the
+    model there is no loop. Hitting a bound is likewise a 200 with
+    `stop_reason` set, never an exception.
+    """
+    captured = None
+    try:
+        with chat_span(MODEL) as span:
+            captured = span
+            result = run_agent(client, MODEL, req.question, span)
+    except AgentError as exc:
+        raise HTTPException(
+            status_code=502, detail=_failure(captured, str(exc))
+        ) from exc
+    except OpenAIError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=_failure(captured, f"provider call failed: {type(exc).__name__}"),
+        ) from exc
+
+    return AgentResponse(**result.model_dump(), trace=captured.trace())

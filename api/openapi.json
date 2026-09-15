@@ -1,6 +1,135 @@
 {
   "components": {
     "schemas": {
+      "AgentRequest": {
+        "properties": {
+          "question": {
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "AgentRequest",
+        "type": "object"
+      },
+      "AgentResponse": {
+        "description": "What the loop did, the steps it took, and the trace behind it.",
+        "properties": {
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          },
+          "model_calls": {
+            "title": "Model Calls",
+            "type": "integer"
+          },
+          "prompt_id": {
+            "title": "Prompt Id",
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/AgentStep"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "stop_reason": {
+            "enum": [
+              "answered",
+              "max_steps",
+              "time_budget",
+              "repeated_tool_call",
+              "empty_response"
+            ],
+            "title": "Stop Reason",
+            "type": "string"
+          },
+          "tools_available": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools Available",
+            "type": "array"
+          },
+          "trace": {
+            "$ref": "#/components/schemas/TraceDocument"
+          }
+        },
+        "required": [
+          "answer",
+          "stop_reason",
+          "steps",
+          "model_calls",
+          "tools_available",
+          "prompt_id",
+          "trace"
+        ],
+        "title": "AgentResponse",
+        "type": "object"
+      },
+      "AgentStep": {
+        "description": "One tool the model asked for, and what came back.",
+        "properties": {
+          "arguments": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Arguments"
+          },
+          "n": {
+            "title": "N",
+            "type": "integer"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "raw_arguments": {
+            "title": "Raw Arguments",
+            "type": "string"
+          },
+          "result": {
+            "title": "Result",
+            "type": "string"
+          },
+          "signal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signal"
+          },
+          "tool": {
+            "title": "Tool",
+            "type": "string"
+          }
+        },
+        "required": [
+          "n",
+          "tool",
+          "arguments",
+          "raw_arguments",
+          "ok",
+          "signal",
+          "result"
+        ],
+        "title": "AgentStep",
+        "type": "object"
+      },
       "AskRequest": {
         "properties": {
           "question": {
@@ -500,6 +629,45 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/agent": {
+      "post": {
+        "description": "Answer by choosing capabilities, in sequence, until done or out of room.\n\nUnlike /ask and /classify this endpoint spans several model calls, so its\ntrace covers a whole run: `events` holds one `model_turn` per call and one\n`tool_call` per capability invoked, and the token counts are run totals.\nEach tool that calls the model still opens its own span, so it also leaves\nits own `llm_call` log line.\n\nNote what is *not* an error here. A capability that fails - including the\nindex being unreachable, which /ask reports as a 503 - comes back as a tool\nresult the model is expected to read and act on, so the run continues and\nreturns 200. Only the loop's own model call failing is a 502: without the\nmodel there is no loop. Hitting a bound is likewise a 200 with\n`stop_reason` set, never an exception.",
+        "operationId": "agent_agent_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent"
+      }
+    },
     "/ask": {
       "post": {
         "description": "Answer from the indexed documentation. Not streamed: the sources are\npart of the result and are only known once retrieval has finished.\n\nReads the index per request, so `python index_docs.py` takes effect on the\nnext question with no restart.",

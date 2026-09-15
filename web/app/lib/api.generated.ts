@@ -4,6 +4,39 @@
  */
 
 export interface paths {
+    "/agent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Agent
+         * @description Answer by choosing capabilities, in sequence, until done or out of room.
+         *
+         *     Unlike /ask and /classify this endpoint spans several model calls, so its
+         *     trace covers a whole run: `events` holds one `model_turn` per call and one
+         *     `tool_call` per capability invoked, and the token counts are run totals.
+         *     Each tool that calls the model still opens its own span, so it also leaves
+         *     its own `llm_call` log line.
+         *
+         *     Note what is *not* an error here. A capability that fails - including the
+         *     index being unreachable, which /ask reports as a 503 - comes back as a tool
+         *     result the model is expected to read and act on, so the run continues and
+         *     returns 200. Only the loop's own model call failing is a 502: without the
+         *     model there is no loop. Hitting a bound is likewise a 200 with
+         *     `stop_reason` set, never an exception.
+         */
+        post: operations["agent_agent_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ask": {
         parameters: {
             query?: never;
@@ -129,6 +162,55 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AgentRequest */
+        AgentRequest: {
+            /** Question */
+            question: string;
+        };
+        /**
+         * AgentResponse
+         * @description What the loop did, the steps it took, and the trace behind it.
+         */
+        AgentResponse: {
+            /** Answer */
+            answer: string;
+            /** Model Calls */
+            model_calls: number;
+            /** Prompt Id */
+            prompt_id: string;
+            /** Steps */
+            steps: components["schemas"]["AgentStep"][];
+            /**
+             * Stop Reason
+             * @enum {string}
+             */
+            stop_reason: "answered" | "max_steps" | "time_budget" | "repeated_tool_call" | "empty_response";
+            /** Tools Available */
+            tools_available: string[];
+            trace: components["schemas"]["TraceDocument"];
+        };
+        /**
+         * AgentStep
+         * @description One tool the model asked for, and what came back.
+         */
+        AgentStep: {
+            /** Arguments */
+            arguments: {
+                [key: string]: unknown;
+            } | null;
+            /** N */
+            n: number;
+            /** Ok */
+            ok: boolean;
+            /** Raw Arguments */
+            raw_arguments: string;
+            /** Result */
+            result: string;
+            /** Signal */
+            signal: string | null;
+            /** Tool */
+            tool: string;
+        };
         /** AskRequest */
         AskRequest: {
             /** Question */
@@ -332,6 +414,39 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    agent_agent_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     ask_ask_post: {
         parameters: {
             query?: never;

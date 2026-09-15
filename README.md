@@ -63,7 +63,7 @@ curl -s http://localhost:8000/classify -H 'content-type: application/json' \
 
 | Directory | Stack | What it is |
 | --- | --- | --- |
-| [`api/`](api/) | FastAPI, `openai` SDK | The service. `POST /chat` streams SSE; `POST /classify` returns a schema-constrained object. Also the prompt store, tracing seam, eval suite and tests. **[Full documentation](api/README.md)** |
+| [`api/`](api/) | FastAPI, `openai` SDK | The service. `POST /chat` streams SSE; `POST /classify` returns a schema-constrained object; `POST /agent` runs a tool-calling loop over the rest. Also the prompt store, tracing seam, eval suite and tests. **[Full documentation](api/README.md)** |
 | [`web/`](web/) | Next.js 16, React 19, Tailwind v4 | Chat page, classifier page, and a trace panel for any call |
 | [`scripts/`](scripts/) | Node, Vercel AI SDK | Numbered standalone experiments, read as much as run: first call, temperature, roles, streaming, error handling |
 | [`evals/`](api/evals/) | — | 34 scored cases, run history, pinned reference |
@@ -105,6 +105,19 @@ curl -s http://localhost:8000/ask -H 'content-type: application/json' \
 Every answer carries the passages behind it, with their similarity scores, precise enough to go and check — `api/README.md > api > CI > What CI cannot cover`. Indexing is a separate command, so re-indexing after editing a document takes effect on the next question with no restart.
 
 It is deliberately the naive version — vector similarity, a fixed four passages, no keyword search or reranking — so the failure modes stay visible. Ask it "Name one sea" and it still retrieves four passages, none relevant.
+
+## Letting the model choose
+
+`/agent` gives the model the capabilities the API already has — answering from the docs, and classifying a ticket — and lets it decide which to use and in what order. The loop is hand-written, with no orchestration framework, so that a later step can rebuild it on one and the two can be compared.
+
+```bash
+curl -s http://localhost:8000/agent -H 'content-type: application/json' \
+  -d '{"question":"Classify: \"I was charged twice.\" Then say what the docs cover."}'
+```
+
+Most of the loop is what happens when things go wrong. It is bounded three ways — steps, wall clock, and repeating an identical call — and **hitting a bound is a reported `stop_reason`, not an exception or a silent stop**. A tool that fails, or finds nothing, comes back as a result the model is expected to read and act on rather than something that kills the run; retrieval's existing `NOT_IN_DOCS` signal is reused rather than duplicated. Arguments that make no sense are rejected and reported, never repaired.
+
+`llama3.2` handles this badly, and the [measured failures](api/README.md#what-the-model-actually-does) are the point: it refuses unanswerable questions well (7/7), but drops half of a two-part request 3 times in 5 — and then fabricates the half it skipped.
 
 ## Tests
 
