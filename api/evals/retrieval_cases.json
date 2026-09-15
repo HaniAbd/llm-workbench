@@ -1,0 +1,639 @@
+{
+  "about": "Retrieval evaluation. `expect.passages` lists the passages that must be found (order ignored), each identified by a distinctive substring rather than a heading path so re-chunking does not break the set. `expect.must_contain` lists fact groups the answer needs, each group satisfied by any alternative. Unanswerable cases have no passages and must_refuse instead. See retrieval_scoring.py.",
+  "cases": [
+    {
+      "id": "direct_eval_not_in_ci",
+      "group": "direct",
+      "question": "Why is the eval suite not run in CI?",
+      "expect": {
+        "passages": [
+          {
+            "source": "api/README.md",
+            "contains": "a GitHub runner has no model and no way to reach yours"
+          }
+        ],
+        "must_contain": [
+          [
+            "model",
+            "llama3.2"
+          ],
+          [
+            "runner",
+            "CI",
+            "machine"
+          ]
+        ]
+      },
+      "note": "Stated in one place under an obvious heading."
+    },
+    {
+      "id": "direct_postgres_port",
+      "group": "direct",
+      "question": "What port does the Postgres container listen on?",
+      "expect": {
+        "passages": [
+          {
+            "source": "api/README.md",
+            "contains": "pgvector on localhost:5433"
+          }
+        ],
+        "must_contain": [
+          [
+            "5433"
+          ]
+        ]
+      },
+      "note": "A single number, hard to paraphrase away."
+    },
+    {
+      "id": "direct_embedding_model",
+      "group": "direct",
+      "question": "Which embedding model does the document index use?",
+      "expect": {
+        "passages": [
+          {
+            "source": "api/README.md",
+            "contains": "ollama pull nomic-embed-text"
+          }
+        ],
+        "must_contain": [
+          [
+            "nomic-embed-text"
+          ]
+        ]
+      },
+      "note": "Named exactly once in a setup block."
+    },
+    {
+      "id": "direct_prompt_event_timing",
+      "group": "direct",
+      "question": "When does the chat endpoint send the prompt event?",
+      "expect": {
+        "passages": [
+          {
+            "source": "api/README.md",
+            "contains": "Arrives first, before any token"
+          }
+        ],
+        "must_contain": [
+          [
+            "first",
+            "before"
+          ],
+          [
+            "token"
+          ]
+        ]
+      },
+      "note": "A sentence in a table cell."
+    },
+    {
+      "id": "direct_blank_classify_status",
+      "group": "direct",
+      "question": "What does the classify endpoint return for blank input?",
+      "expect": {
+        "passages": [
+          {
+            "source": "api/README.md",
+            "contains": "before any model call is spent"
+          }
+        ],
+        "must_contain": [
+          [
+            "422"
+          ]
+        ]
+      },
+      "note": "Status codes are unambiguous to score."
+    },
+    {
+      "id": "direct_cors_origins",
+      "group": "direct",
+      "question": "Which origins is the API's CORS configured to allow?",
+      "expect": {
+        "passages": [
+          {
+            "source": "api/README.md",
+            "contains": "any localhost port is accepted"
+          }
+        ],
+        "must_contain": [
+          [
+            "localhost"
+          ],
+          [
+            "any port",
+            "any localhost port",
+            "regex",
+            "127.0.0.1"
+          ]
+        ]
+      },
+      "note": "Answer is a rule rather than a value."
+    },
+    {
+      "id": "direct_finish_reason_length",
+      "group": "direct",
+      "question": "What does a finish reason of length mean?",
+      "expect": {
+        "passages": [
+          {
+            "source": "api/README.md",
+            "contains": "the reply was truncated"
+          }
+        ],
+        "must_contain": [
+          [
+            "truncat",
+            "cut off",
+            "incomplete"
+          ]
+        ]
+      },
+      "note": "Stemmed alternative so 'truncated'/'truncation' both count."
+    },
+    {
+      "id": "direct_index_prune",
+      "group": "direct",
+      "question": "What happens to the index when a documentation file is deleted?",
+      "expect": {
+        "passages": [
+          {
+            "source": "api/README.md",
+            "contains": "prunes documents no longer on disk"
+          }
+        ],
+        "must_contain": [
+          [
+            "prune",
+            "remove",
+            "delete"
+          ],
+          [
+            "full",
+            "no longer on disk",
+            "not on disk"
+          ]
+        ]
+      },
+      "note": "Behaviour, not a value."
+    },
+    {
+      "id": "vocab_switch_provider",
+      "group": "vocabulary",
+      "question": "Can I point this at OpenAI or Anthropic instead of running locally?",
+      "expect": {
+        "passages": [
+          {
+            "source": "api/README.md",
+            "contains": "Swapping to a hosted provider"
+          }
+        ],
+        "must_contain": [
+          [
+            "environment variable",
+            "env var",
+            "three vars",
+            "OPENAI_BASE_URL"
+          ]
+        ]
+      },
+      "note": "The docs say 'hosted provider'; the question names vendors that appear nowhere in the corpus."
+    },
+    {
+      "id": "vocab_undo_prompt_edit",
+      "group": "vocabulary",
+      "question": "If I undo an edit to a prompt, does it go back to its old name?",
+      "expect": {
+        "passages": [
+          {
+            "source": "api/README.md",
+            "contains": "editing a prompt cannot silently keep its old id"
+          }
+        ],
+        "must_contain": [
+          [
+            "same text",
+            "same id",
+            "content",
+            "hash",
+            "digest"
+          ]
+        ]
+      },
+      "note": "The docs say 'identity' and 'digest'; the question says 'name' and 'undo'."
+    },
+    {
+      "id": "vocab_browser_blocked",
+      "group": "vocabulary",
+      "question": "The page will not load results in my browser. What would cause that?",
+      "expect": {
+        "passages": [
+          {
+            "source": "api/README.md",
+            "contains": "any localhost port is accepted"
+          }
+        ],
+        "must_contain": [
+          [
+            "CORS",
+            "origin"
+          ]
+        ]
+      },
+      "note": "The word CORS never appears in the question."
+    },
+    {
+      "id": "vocab_stop_invented_category",
+      "group": "vocabulary",
+      "question": "What stops the model making up a category that is not allowed?",
+      "expect": {
+        "passages": [
+          {
+            "source": "api/README.md",
+            "contains": "schema-constrained decoding"
+          }
+        ],
+        "must_contain": [
+          [
+            "grammar",
+            "schema",
+            "json_schema",
+            "constrain"
+          ]
+        ]
+      },
+      "note": "Docs say 'decoding grammar' and 'enum'; the question says 'making up'."
+    },
+    {
+      "id": "vocab_numbers_mean_same",
+      "group": "vocabulary",
+      "question": "How do I know two sets of numbers were measured the same way?",
+      "expect": {
+        "passages": [
+          {
+            "source": "api/README.md",
+            "contains": "Comparison refused"
+          }
+        ],
+        "must_contain": [
+          [
+            "digest",
+            "hash",
+            "scorer"
+          ]
+        ]
+      },
+      "note": "Docs say 'comparable' and 'scorer_digest'; the question avoids both."
+    },
+    {
+      "id": "vocab_slow_first_word",
+      "group": "vocabulary",
+      "question": "Which number tells me how long before the user sees anything?",
+      "expect": {
+        "passages": [
+          {
+            "source": "api/README.md",
+            "contains": "time to first token"
+          }
+        ],
+        "must_contain": [
+          [
+            "ttft",
+            "first token"
+          ]
+        ]
+      },
+      "note": "Docs say 'time to first token'; the question describes it instead."
+    },
+    {
+      "id": "vocab_throwaway_run",
+      "group": "vocabulary",
+      "question": "Can I try the eval on part of the set without it counting?",
+      "expect": {
+        "passages": [
+          {
+            "source": "api/README.md",
+            "contains": "not recorded in runs.jsonl"
+          }
+        ],
+        "must_contain": [
+          [
+            "group",
+            "subset"
+          ],
+          [
+            "not recorded",
+            "not saved",
+            "never written",
+            "cannot be pinned"
+          ]
+        ]
+      },
+      "note": "Docs say 'subset run' and '--group'; the question says 'part of the set'."
+    },
+    {
+      "id": "multi_prerequisites",
+      "group": "multi_doc",
+      "question": "What do I need installed before anything will run?",
+      "expect": {
+        "passages": [
+          {
+            "source": "README.md",
+            "contains": "Python 3.14, Node 22"
+          },
+          {
+            "source": "api/README.md",
+            "contains": "Ollama, running, with the model pulled"
+          }
+        ],
+        "must_contain": [
+          [
+            "ollama"
+          ],
+          [
+            "python"
+          ],
+          [
+            "node"
+          ]
+        ]
+      },
+      "note": "Prerequisites are stated in both READMEs, neither complete alone."
+    },
+    {
+      "id": "multi_prompt_identity_and_store",
+      "group": "multi_doc",
+      "question": "Where do prompts live and how are they identified?",
+      "expect": {
+        "passages": [
+          {
+            "source": "api/README.md",
+            "contains": "Prompt text lives in `prompts/*.md`"
+          },
+          {
+            "source": "CLAUDE.md",
+            "contains": "Identity is `name@digest`"
+          }
+        ],
+        "must_contain": [
+          [
+            "prompts/",
+            ".md",
+            "file"
+          ],
+          [
+            "digest",
+            "hash",
+            "name@"
+          ]
+        ]
+      },
+      "note": "Location in one document, identity scheme in another."
+    },
+    {
+      "id": "multi_what_ci_covers",
+      "group": "multi_doc",
+      "question": "What does CI check and what does it deliberately not check?",
+      "expect": {
+        "passages": [
+          {
+            "source": "api/README.md",
+            "contains": "a GitHub runner has no model and no way to reach yours"
+          },
+          {
+            "source": "CLAUDE.md",
+            "contains": "model-free"
+          }
+        ],
+        "must_contain": [
+          [
+            "model-free",
+            "without a model",
+            "no model"
+          ],
+          [
+            "eval",
+            "accuracy",
+            "is it any good"
+          ]
+        ]
+      },
+      "note": "The positive and negative halves sit in different documents."
+    },
+    {
+      "id": "multi_three_parts",
+      "group": "multi_doc",
+      "question": "What are the parts of this project and what does each one do?",
+      "expect": {
+        "passages": [
+          {
+            "source": "README.md",
+            "contains": "| Directory | Stack | What it is |"
+          },
+          {
+            "source": "CLAUDE.md",
+            "contains": "They are independent"
+          }
+        ],
+        "must_contain": [
+          [
+            "api"
+          ],
+          [
+            "web"
+          ],
+          [
+            "scripts"
+          ]
+        ]
+      },
+      "note": "Both documents carry a layout table; either alone is partial."
+    },
+    {
+      "id": "multi_trace_contents",
+      "group": "multi_doc",
+      "question": "What is in a trace and where can I see it?",
+      "expect": {
+        "passages": [
+          {
+            "source": "api/README.md",
+            "contains": "superset of the `llm_call` log line"
+          },
+          {
+            "source": "CLAUDE.md",
+            "contains": "trace panel"
+          }
+        ],
+        "must_contain": [
+          [
+            "messages_sent",
+            "what was sent",
+            "sent"
+          ],
+          [
+            "panel",
+            "web",
+            "browser"
+          ]
+        ]
+      },
+      "note": "Contents documented in one place, location in another."
+    },
+    {
+      "id": "multi_env_files",
+      "group": "multi_doc",
+      "question": "Why are there two env files and which one does the front end read?",
+      "expect": {
+        "passages": [
+          {
+            "source": "README.md",
+            "contains": "Next.js only reads `.env*` from its own project directory"
+          },
+          {
+            "source": "CLAUDE.md",
+            "contains": "does **not** share that file"
+          }
+        ],
+        "must_contain": [
+          [
+            "next",
+            "web"
+          ],
+          [
+            "own directory",
+            "web/.env",
+            "not read",
+            "does not"
+          ]
+        ]
+      },
+      "note": "Stated from two angles in two documents."
+    },
+    {
+      "id": "unans_upload_size",
+      "group": "unanswerable",
+      "question": "What is the maximum upload size the API accepts?",
+      "expect": {
+        "must_refuse": true
+      },
+      "note": "Plausible-sounding API question with no answer in the docs. No forbidden list: every candidate value also appears in the question, so refusal detection alone carries this case."
+    },
+    {
+      "id": "unans_license",
+      "group": "unanswerable",
+      "question": "What licence is this project released under?",
+      "expect": {
+        "must_refuse": true,
+        "must_not_contain": [
+          "MIT",
+          "Apache",
+          "GPL",
+          "BSD"
+        ]
+      },
+      "note": "The corpus never states a licence. A named licence here is invention."
+    },
+    {
+      "id": "unans_maintainer",
+      "group": "unanswerable",
+      "question": "Who maintains this project and how do I contact them?",
+      "expect": {
+        "must_refuse": true,
+        "must_not_contain": [
+          "maintained by"
+        ]
+      },
+      "note": "No ownership information exists in the corpus."
+    },
+    {
+      "id": "unans_production_cost",
+      "group": "unanswerable",
+      "question": "How much does it cost per month to run this in production?",
+      "expect": {
+        "must_refuse": true,
+        "must_not_contain": [
+          "usd",
+          "eur",
+          "costs about"
+        ]
+      },
+      "note": "Cost is discussed only as 'no bill' for local use; a figure would be invented."
+    },
+    {
+      "id": "unans_redis_version",
+      "group": "unanswerable",
+      "question": "Which version of Redis does the cache use?",
+      "expect": {
+        "must_refuse": true,
+        "must_not_contain": [
+          "redis 7",
+          "redis 6",
+          "version 7",
+          "version 6"
+        ]
+      },
+      "note": "There is no Redis and no cache. A false premise the answer must not accept."
+    },
+    {
+      "id": "unans_sla",
+      "group": "unanswerable",
+      "question": "What is the uptime SLA for the classification endpoint?",
+      "expect": {
+        "must_refuse": true,
+        "must_not_contain": [
+          "99."
+        ]
+      },
+      "note": "Another false premise dressed in plausible operational language."
+    },
+    {
+      "id": "unans_password_reset",
+      "group": "unanswerable",
+      "question": "How do I reset my password?",
+      "expect": {
+        "must_refuse": true,
+        "must_not_contain": [
+          "reset link"
+        ]
+      },
+      "note": "There are no accounts. The word 'password' appears in the corpus only as a classifier example, which is exactly the vaguely-nearby text refusal must resist."
+    },
+    {
+      "id": "unans_capital_of_france",
+      "group": "unanswerable",
+      "question": "What is the capital of France?",
+      "expect": {
+        "must_refuse": true,
+        "must_not_contain": [
+          "paris"
+        ]
+      },
+      "note": "Something the model certainly knows but the documentation does not contain."
+    },
+    {
+      "id": "unans_name_one_sea",
+      "group": "unanswerable",
+      "question": "Name one sea.",
+      "expect": {
+        "must_refuse": true,
+        "must_not_contain": [
+          "mediterranean",
+          "baltic",
+          "caspian",
+          "red sea"
+        ]
+      },
+      "note": "The measured worst case: scores ~0.47 yet retrieval still returns four passages, and the corpus contains the word 'sea' in chat examples."
+    },
+    {
+      "id": "unans_rate_limit",
+      "group": "unanswerable",
+      "question": "How many requests per minute can I send before being rate limited?",
+      "expect": {
+        "must_refuse": true
+      },
+      "note": "Rate limiting is named as out of scope elsewhere, so nearby text exists without an answer. No forbidden list: every candidate value also appears in the question, so refusal detection alone carries this case."
+    }
+  ]
+}

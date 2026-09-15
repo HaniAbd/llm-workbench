@@ -93,6 +93,18 @@ A `--group` run is a different measurement, not a smaller one: it is never saved
 
 Failures split into **accepted** (blessed in `cases.json`), **regressions** (worse than baseline — exits non-zero), **outstanding** (known bad, no worse) and **fixed**, so a new break is never buried under a familiar one.
 
+#### Retrieval evaluation
+
+`python evals/run_retrieval.py` (31 cases, ~4 min) scores `/ask`. **Two scores, never blended** — `retrieval` (recall of expected passages, order ignored, fractional for multi-document answers) and `answer` (required facts; binary refusal for unanswerable cases). A third derived figure, `answer|found`, gives the answer score over cases where retrieval found everything: currently **0.917 against retrieval 0.619**, so the weakness is the index, not the model.
+
+Four groups: `direct`, `vocabulary` (question words absent from the text), `multi_doc` (answer spans two documents), `unanswerable` (must refuse). Expected passages are named by a distinctive substring rather than a heading path, so re-chunking does not break the set.
+
+Forbidden-claim matching is word-boundary (`MIT` occurs inside "limit"), contractions are expanded before matching, and a forbidden entry must name a value the model could only have invented — never a word the question uses, since a correct refusal restates the question.
+
+`evals/harness.py` is shared with the classifier suite: run records, reference pinning, comparison and the miss buckets. Each suite keeps its own history and reference.
+
+The `/ask` prompt is rendered with its passages, so the API's `prompt_id` differs per question; the suite records the **template** digest (`…~template`) to attribute a run.
+
 #### Development traces
 
 Both endpoints return a `trace` beside their normal output — a field on `/classify`, a `trace` SSE event after the last token on `/chat` (so it cannot delay streaming). It is a **superset of the `llm_call` log line**: the log stays scalar and greppable, the trace adds `messages_sent`, `raw_output`, and an ordered `events` list.

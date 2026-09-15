@@ -217,6 +217,10 @@ by field                      by group
   sentiment         0.955
 ```
 
+#### Two suites, one harness
+
+`evals/harness.py` holds what both suites need — recording a run, pinning a reference, comparing two runs, sorting misses into buckets. `run.py` scores the classifier, `run_retrieval.py` scores retrieval. They measure different things but keep a measurement the same way, and each has its own history and reference (`runs.jsonl` / `retrieval_runs.jsonl`).
+
 #### Two kinds of field
 
 `expect` in `cases.json` lists the values that would be **accepted**, never one correct answer. Fields are scored two ways, because they are not the same kind of question:
@@ -365,6 +369,55 @@ Vector similarity, a fixed four passages, nothing else. No keyword search, no re
 - **Similarity is not relevance.** "What port does the API run on?" ranks *Prerequisites* above *Run*, which is the section that actually contains `8000`.
 - **Citations are model-generated prose.** `llama3.2` sometimes stitches two heading paths into one that does not exist. Trust the `sources` list, not the sentence.
 
+
+### Retrieval evaluation
+
+```bash
+python evals/run_retrieval.py                     # 31 cases, ~4 min
+python evals/run_retrieval.py --group unanswerable # one group, faster
+python evals/run_retrieval.py --history
+```
+
+```
+retrieval=0.619  answer=0.758   (31 cases)
+answer|found=0.917   (answer over the 12 cases where retrieval found everything)
+
+by group          retrieval   answer
+  direct               0.875    0.875
+  multi_doc            0.500    0.667
+  unanswerable             —    0.900
+  vocabulary           0.429    0.500
+```
+
+**Two scores, never blended.** Retrieval and generation fail independently: the index can miss the passage, or find it and the model can still answer badly from it. One number would say something is wrong without saying which half to fix.
+
+`answer|found` is the figure that separates them — the answer score over only those cases where retrieval found everything it should. At **0.917** against a retrieval score of **0.619**, the current weakness is the index, not the model.
+
+| Group | What it tests |
+| --- | --- |
+| `direct` | The answer sits in one obvious place |
+| `vocabulary` | The question's words do not appear in the text — "point this at OpenAI" for a passage that says "hosted provider" |
+| `multi_doc` | The answer spans two documents; finding one scores 0.5 |
+| `unanswerable` | The documentation does not answer it and the model must decline |
+
+#### How each is scored
+
+**Retrieval — recall, order ignored.** A passage in position four was still put in front of the model, so rank does not matter; whether it came back does. Fractional, so a two-document question can score 0.5. Expected passages are named by a **distinctive substring**, not a heading path, so re-chunking or renaming a heading does not break the dataset for a reason unrelated to retrieval. Unanswerable cases score `None`, not zero — there is nothing to find, and zero would read as an index failure.
+
+**Answer — required facts, not a judge.** Each answerable case lists fact groups, satisfied by any listed alternative, and scores the fraction present. Unanswerable cases are binary: the answer must contain a refusal marker and must not state a forbidden claim.
+
+A judge was the alternative and was rejected: a second model call doubles the run and puts llama3.2's own noise into every score, when the point is to detect a change in *retrieval*. The cost is real — a valid paraphrase nobody anticipated scores zero — so fact lists are alternatives and are meant to be edited when that happens.
+
+Two rules the forbidden lists follow, both learned by getting them wrong:
+
+- Matching is **word-boundary**, because `MIT` occurs inside "li*mit*" and `Paris` inside "com*paris*on".
+- A forbidden entry names a value the model could only have **invented**, never a word the question itself uses. A correct refusal restates the question ("does not provide the requests per minute"), and a list containing "requests per" fails it.
+
+Contractions are expanded before matching, so a refusal marker needs one form rather than two — `doesn't provide` does not contain `not provide`.
+
+#### Attributing a retrieval run
+
+The `/ask` prompt is rendered with the retrieved passages, so the `prompt_id` the API returns **differs for every question** — it identifies the request, not the prompt. The suite therefore records the digest of the prompt *template*, before substitution, as `answer_question@…~template`, and counts the rendered variants as a sanity check.
 
 ## Prompts
 
