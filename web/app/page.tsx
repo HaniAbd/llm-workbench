@@ -7,10 +7,10 @@ import {
   ConversationEmptyState,
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
-import { cn } from "@/lib/utils";
 import Composer from "./components/Composer";
 import { Label, Notice } from "./components/Notice";
-import TracePanel from "./components/TracePanel";
+import Markdown from "./components/Markdown";
+import { TraceTrigger } from "./components/TraceDrawer";
 import { API_BASE, readSSE, type Trace } from "./lib/api";
 
 type Usage = { inputTokens: number; outputTokens: number };
@@ -23,6 +23,17 @@ type Message = {
   finishReason?: string;
   trace?: Trace;
 };
+
+/** Starters for an empty chat. Deliberately not about this repository: /chat
+ *  has no retrieval, so a question about the project would be answered from
+ *  whatever the model invents. Asking one of these and the same question on
+ *  "Ask the docs" is the clearest way to see what retrieval is doing. */
+const STARTERS = [
+  "Explain what an embedding is, briefly.",
+  "What is the difference between a prompt and a system message?",
+  "Why do language models hallucinate?",
+  "Write one sentence about the sea.",
+];
 
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -100,11 +111,26 @@ export default function Home() {
       <Conversation className="flex-1">
         <ConversationContent className="mx-auto w-full max-w-3xl px-5 pb-48 pt-8">
           {messages.length === 0 ? (
-            <ConversationEmptyState
-              className="py-24"
-              title="Nothing asked yet"
-              description="Answers come from the model alone. Open the trace under any reply to see what was sent and where the time went."
-            />
+            <div className="flex flex-col items-center gap-6 py-20">
+              <ConversationEmptyState
+                title="Nothing asked yet"
+                description="Answers come from the model alone — it knows nothing about this repository. Open the trace under any reply to see what was sent and where the time went."
+              />
+              {/* Clicking fills the composer rather than sending, matching the
+                  ask page and leaving the question editable first. */}
+              <div className="flex flex-wrap justify-center gap-2">
+                {STARTERS.map((q) => (
+                  <button
+                    key={q}
+                    type="button"
+                    onClick={() => setInput(q)}
+                    className="rounded-full border border-border bg-card/60 px-3.5 py-1.5 text-xs text-muted-foreground transition-all hover:border-primary/50 hover:text-foreground active:scale-95"
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+            </div>
           ) : (
             <div className="flex flex-col gap-7">
               {messages.map((m, i) => {
@@ -117,24 +143,25 @@ export default function Home() {
                       {m.role}
                     </Label>
 
-                    <p
-                      className={cn(
-                        "whitespace-pre-wrap leading-7",
-                        m.role === "user"
-                          ? "text-foreground/90"
-                          : "text-foreground",
-                      )}
-                    >
-                      {m.content}
-                      {m.finishReason === "length" && (
-                        <span className="text-warn">…</span>
-                      )}
-                      {/* The caret is the only motion during streaming: it
-                          marks that tokens are still arriving. */}
-                      {streaming && (
-                        <span className="ml-0.5 inline-block h-[1.1em] w-[2px] translate-y-[2px] animate-pulse bg-primary align-baseline" />
-                      )}
-                    </p>
+                    {m.role === "user" ? (
+                      // What the user typed, echoed. Not rendered: it is a
+                      // record of input, not prose written to be read.
+                      <p className="whitespace-pre-wrap leading-7 text-foreground/90">
+                        {m.content}
+                      </p>
+                    ) : (
+                      <div className="text-foreground">
+                        <Markdown>{m.content}</Markdown>
+                        {m.finishReason === "length" && (
+                          <span className="text-warn">…</span>
+                        )}
+                        {/* The caret is the only motion during streaming: it
+                            marks that tokens are still arriving. */}
+                        {streaming && (
+                          <span className="ml-0.5 inline-block h-[1.1em] w-[2px] translate-y-[2px] animate-pulse bg-primary align-baseline" />
+                        )}
+                      </div>
+                    )}
 
                     {m.finishReason === "length" && (
                       <Notice tone="warn" title="Cut off.">
@@ -143,14 +170,26 @@ export default function Home() {
                       </Notice>
                     )}
 
-                    {m.usage && (
-                      <div className="flex gap-4 font-mono text-[11px] text-muted-foreground">
-                        <span>in {m.usage.inputTokens}</span>
-                        <span>out {m.usage.outputTokens}</span>
+                    {/* Token counts and the trace control belong to the same
+                        fact about the call, so they sit on one row. */}
+                    {(m.usage || m.trace) && (
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                        {m.trace && (
+                          <TraceTrigger
+                            id={`chat-${i}`}
+                            label={`chat · message ${Math.ceil((i + 1) / 2)}`}
+                            trace={m.trace}
+                          />
+                        )}
+                        {m.usage && (
+                          <span className="flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
+                            <span>in {m.usage.inputTokens}</span>
+                            <span className="text-border">·</span>
+                            <span>out {m.usage.outputTokens}</span>
+                          </span>
+                        )}
                       </div>
                     )}
-
-                    {m.trace && <TracePanel trace={m.trace} />}
                   </div>
                 );
               })}

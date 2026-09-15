@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Loader } from "@/components/ai-elements/loader";
 import { cn } from "@/lib/utils";
 import { Label, Notice } from "../components/Notice";
-import TracePanel from "../components/TracePanel";
+import { TraceTrigger } from "../components/TraceDrawer";
 import { API_BASE, type Classification, type Trace } from "../lib/api";
 
 /** Outcomes the endpoint can produce. Kept explicit so the UI shows the
@@ -162,7 +162,9 @@ export default function ClassifyPage() {
           <Notice tone="danger" title="Failed (502).">
             {outcome.message}
           </Notice>
-          {outcome.trace && <TracePanel trace={outcome.trace} />}
+          {outcome.trace && (
+            <TraceTrigger id="classify-failed" label="classify · failed call" trace={outcome.trace} />
+          )}
         </div>
       )}
 
@@ -188,7 +190,11 @@ export default function ClassifyPage() {
             ))}
           </div>
 
-          <TracePanel trace={outcome.result.trace} />
+          <TraceTrigger
+            id="classify"
+            label={`classify · ${text.trim().slice(0, 60)}`}
+            trace={outcome.result.trace}
+          />
         </div>
       )}
     </main>

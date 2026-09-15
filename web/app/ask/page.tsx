@@ -11,7 +11,8 @@ import {
 import { cn } from "@/lib/utils";
 import Composer from "../components/Composer";
 import { Label, Notice } from "../components/Notice";
-import TracePanel from "../components/TracePanel";
+import Markdown from "../components/Markdown";
+import { TraceTrigger } from "../components/TraceDrawer";
 import { API_BASE, WEAK_MATCH_BELOW, type AskResult, type Trace } from "../lib/api";
 
 type Outcome =
@@ -151,7 +152,9 @@ export default function AskPage() {
                   <Notice tone="danger" title="Failed (502).">
                     {outcome.message}
                   </Notice>
-                  {outcome.trace && <TracePanel trace={outcome.trace} />}
+                  {outcome.trace && (
+                    <TraceTrigger id="ask-failed" label="ask · failed call" trace={outcome.trace} />
+                  )}
                 </>
               )}
 
@@ -203,9 +206,9 @@ export default function AskPage() {
                             ? "answer · the model's words, which may misquote or abbreviate a source"
                             : "what it said"}
                         </Label>
-                        <p className="whitespace-pre-wrap leading-7 text-foreground">
-                          {answer}
-                        </p>
+                        <div className="text-foreground">
+                          <Markdown>{answer}</Markdown>
+                        </div>
                       </div>
 
                       {citesNothingReal && (
@@ -271,7 +274,7 @@ export default function AskPage() {
                         </p>
                       </div>
 
-                      <TracePanel trace={trace} />
+                      <TraceTrigger id="ask" label={`ask · ${asked}`} trace={trace} />
                     </div>
                   );
                 })()}
