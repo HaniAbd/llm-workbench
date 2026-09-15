@@ -91,7 +91,7 @@ pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest                     # 167 checks, under a second, no model needed
 ```
 
-These run in CI on every push and pull request, alongside the `web` typecheck, lint and build. They deliberately cover only what works **without a model**: unrenderable prompts, `$ref` creeping into the JSON schema, scorer scales drifting from the schema enums, typo'd eval expectations, a renamed trace key that would break the web panel.
+These run in CI on every push and pull request, alongside the `web` job: route-type generation, typecheck, lint and build. They deliberately cover only what works **without a model**: unrenderable prompts, `$ref` creeping into the JSON schema, scorer scales drifting from the schema enums, typo'd eval expectations, a renamed trace key that would break the web panel.
 
 **The eval suite is not in CI, on purpose.** It needs a model, and a GitHub runner has neither one nor a route to yours. So CI answers *"is it wired up correctly"*, never *"is it any good"* — a prompt change that halves classification accuracy passes cleanly. Run the eval before trusting a prompt change. [What it would take to move it into CI](api/README.md#what-ci-cannot-cover).
 
