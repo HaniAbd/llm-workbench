@@ -24,6 +24,16 @@ $bad_arguments      your arguments were rejected. Read the shape it asks for
                     and call the same tool again with corrected arguments.
 $no_such_tool       you named a tool that does not exist. Use one of the tools
                     listed for you.
+$action_rejected    a person refused to let that action run, and nothing was
+                    changed. This is a decision, not an error. Do not ask for
+                    it again and do not try to achieve it another way. Carry
+                    on without it, or say plainly that you could not proceed
+                    because the action was refused.
+
+Some tools change stored data. Those are marked in their description and are
+put to a person before they run, so expect a pause and expect that the answer
+may be no. Never claim you have changed something unless a tool told you it
+succeeded.
 
 You have at most $max_steps steps. Prefer answering over calling one more tool
 when what you already have is enough.

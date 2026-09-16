@@ -39,9 +39,11 @@ from typing import Any, Callable, Literal
 
 from openai import OpenAIError
 from psycopg import OperationalError
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+import index_docs
 import prompts
+import store
 from answering import REFUSAL_SENTINEL, AnsweringError, answer_question
 from classification import ClassificationError, classify
 from tracing import ChatSpan, chat_span
@@ -63,6 +65,8 @@ MAX_REPEATED_CALLS = 2
 # Rendered into the prompt as well as returned to the model, so the text the
 # model is told to watch for and the text it actually receives cannot drift.
 
+ACTION_REJECTED = "ACTION_REJECTED"
+APPROVAL_EXPIRED = "APPROVAL_EXPIRED"
 NO_SUCH_TOOL = "NO_SUCH_TOOL"
 BAD_ARGUMENTS = "BAD_ARGUMENTS"
 TOOL_FAILED = "TOOL_FAILED"
@@ -76,6 +80,7 @@ StopReason = Literal[
     "time_budget",        # bound: wall clock
     "repeated_tool_call", # bound: same tool, same arguments, over and over
     "empty_response",     # the model returned neither text nor a tool call
+    "approval_expired",   # an action needed a person and nobody answered
 ]
 
 # What the caller is told when a bound ended the run. There is deliberately no
@@ -96,7 +101,57 @@ _BOUND_MESSAGES: dict[str, str] = {
         "repeatedly and was making no progress."
     ),
     "empty_response": "Stopped: the model returned neither an answer nor a tool call.",
+    "approval_expired": (
+        "Stopped: an action needed a person's approval and nobody decided in "
+        "time. Nothing was changed."
+    ),
 }
+
+
+# --- approval --------------------------------------------------------------
+#
+# The loop knows only that some tools must be asked about before they run, and
+# how to act on the three answers. *Who* is asked, and how the waiting is done,
+# is the caller's problem - `runs.py` implements it with a background thread
+# and an HTTP endpoint. This module stays free of both, exactly as `tracing.py`
+# stays free of OpenAI and FastAPI.
+
+ApprovalVerdict = Literal["approved", "rejected", "expired"]
+
+
+@dataclass(frozen=True)
+class ApprovalRequest:
+    """What the loop intends to do, for a person to decide about.
+
+    `effect` is the part that matters to a human and that the model does not
+    get to write: it is declared on the tool, so it describes what the code
+    will actually do rather than what the model says it will do.
+    """
+
+    tool: str
+    arguments: dict[str, Any]
+    description: str
+    effect: str | None
+
+
+@dataclass(frozen=True)
+class Decision:
+    verdict: ApprovalVerdict
+    reason: str | None = None
+
+
+def deny_all(request: ApprovalRequest) -> Decision:
+    """The default approver: refuse everything.
+
+    A loop with nobody attached must not be able to act. Defaulting the other
+    way would mean that forgetting to pass an approver - in a test, a script,
+    a future endpoint - silently removes the gate, and that failure is exactly
+    the one this whole step exists to prevent.
+    """
+    return Decision(
+        "rejected",
+        "no approver is attached to this run, so actions cannot be authorised",
+    )
 
 
 class AgentError(RuntimeError):
@@ -130,6 +185,45 @@ class ClassifyArgs(BaseModel):
     text: str = Field(description="The raw text of one support ticket, as plain text.")
 
 
+def _indexable() -> dict[str, "Path"]:
+    """Repository-relative path -> file, for every document indexing accepts.
+
+    Read from `index_docs` rather than listed here, so the tool can never
+    operate on something the indexer would not.
+    """
+    return {p.relative_to(index_docs.REPO).as_posix(): p
+            for p in index_docs.documents()}
+
+
+class ReindexArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(
+        description="Repository-relative path of a markdown document that is "
+                    "already part of the documentation, e.g. 'api/README.md'."
+    )
+
+    @field_validator("path")
+    @classmethod
+    def _must_be_an_indexable_document(cls, value: str) -> str:
+        """Resolve against the indexer's own file list, not the filesystem.
+
+        Doing this in the argument model rather than inside the tool has a
+        point beyond tidiness: arguments are validated *before* the approval
+        gate, so a person is never asked to approve re-indexing a path that
+        does not exist, and a traversal attempt is a BAD_ARGUMENTS reply rather
+        than something anyone has to think about.
+        """
+        allowed = _indexable()
+        cleaned = value.strip().removeprefix("./")
+        if cleaned not in allowed:
+            raise ValueError(
+                f"{value!r} is not an indexable document; choose one of: "
+                + ", ".join(sorted(allowed))
+            )
+        return cleaned
+
+
 @dataclass(frozen=True)
 class ToolResult:
     """What a capability returned, for the model and for the trace.
@@ -151,6 +245,16 @@ class Tool:
     description: str
     arguments: type[BaseModel]
     run: Callable[..., ToolResult]
+
+    # Whether running this needs a person's say-so. Declared here, on the
+    # server's own tool table, and read only from here. It is deliberately
+    # *not* an argument the model fills in and not a field of the schema it is
+    # shown: a model that can mark its own action safe has not been gated. The
+    # model is told which tools are gated, but telling is all it can do.
+    requires_approval: bool = False
+
+    # What running it changes, in a sentence, for whoever has to decide.
+    effect: str | None = None
 
 
 def _sources(answer) -> str:
@@ -222,6 +326,41 @@ def _run_classify(client, model: str, args: ClassifyArgs, span: ChatSpan) -> Too
     )
 
 
+def _run_reindex(client, model: str, args: ReindexArgs, span: ChatSpan) -> ToolResult:
+    """Re-index one document. The only capability here that changes anything.
+
+    Chosen as the acting tool because this project can justify it: it is the
+    one genuine write the codebase already performs, its effect is real (rows
+    in Postgres are deleted and re-inserted), it is reversible by running it
+    again, and it needs no external service and no credentials. It also makes
+    a sequence worth having - search the docs, find them stale, re-index, search
+    again - which a read-only tool set cannot express.
+    """
+    path = _indexable()[args.path]          # validated by ReindexArgs
+    try:
+        with store.connect() as conn:
+            store.ensure_schema(conn)
+            before = store.stats(conn)["chunks"]
+            written = index_docs.index_document(conn, path)
+            after = store.stats(conn)["chunks"]
+    except OperationalError:
+        return ToolResult(False, INDEX_UNAVAILABLE,
+                          f"{INDEX_UNAVAILABLE}: the document index is not reachable, "
+                          "so nothing was re-indexed. Do not retry this tool.")
+    except OSError as exc:
+        return ToolResult(False, TOOL_FAILED,
+                          f"{TOOL_FAILED}: reindex_document could not read "
+                          f"{args.path}: {type(exc).__name__}.")
+
+    return ToolResult(
+        True, None,
+        f"Re-indexed {args.path}: {written} chunks written. "
+        f"The index now holds {after} chunks (was {before}).",
+        {"path": args.path, "chunks_written": written,
+         "index_chunks_before": before, "index_chunks_after": after},
+    )
+
+
 TOOLS: dict[str, Tool] = {
     t.name: t
     for t in (
@@ -244,6 +383,24 @@ TOOLS: dict[str, Tool] = {
             ),
             arguments=ClassifyArgs,
             run=_run_classify,
+        ),
+        Tool(
+            name="reindex_document",
+            description=(
+                "Re-index one markdown document so that searches reflect the "
+                "file as it is on disk now. Use when a document has been "
+                "edited, or when search results look out of date. "
+                "This tool changes stored data and requires a person's "
+                "approval before it runs."
+            ),
+            arguments=ReindexArgs,
+            run=_run_reindex,
+            requires_approval=True,
+            effect=(
+                "Deletes this document's rows from the search index and "
+                "re-inserts them from the file on disk. Reversible by running "
+                "it again. Nothing outside the index is touched."
+            ),
         ),
     )
 }
@@ -312,16 +469,20 @@ def _for_trace(messages: list[dict]) -> list[dict]:
     return out
 
 
-def _invoke(client, model: str, name: str, raw: str, span: ChatSpan
-            ) -> tuple[ToolResult, dict | None]:
-    """Run one requested tool. Never raises - every failure is a ToolResult."""
+def _resolve(name: str, raw: str) -> tuple[Tool | None, BaseModel | None, ToolResult | None]:
+    """Find the tool and validate its arguments. Never raises.
+
+    Split out of execution so the approval gate has somewhere to sit: the
+    arguments a person is shown are the validated ones, and an unknown tool or
+    nonsense arguments are refused without anybody being asked about them.
+    """
     tool = TOOLS.get(name)
     if tool is None:
-        return ToolResult(
+        return None, None, ToolResult(
             False, NO_SUCH_TOOL,
             f"{NO_SUCH_TOOL}: there is no tool called {name!r}. "
             f"The only tools that exist are: {', '.join(TOOLS)}.",
-        ), None
+        )
 
     try:
         data = json.loads(raw or "{}")
@@ -333,24 +494,32 @@ def _invoke(client, model: str, name: str, raw: str, span: ChatSpan
         example = json.dumps(
             {n: f"<the {n}>" for n in tool.arguments.model_fields}
         )
-        return ToolResult(
+        return tool, None, ToolResult(
             False, BAD_ARGUMENTS,
             f"{BAD_ARGUMENTS}: {name} was called with arguments that are not valid "
             f"({detail}). Every value must be a plain string, not an object "
             f"describing one. Call it again with exactly this shape: {example}",
-        ), None
+        )
 
-    return tool.run(client, model, args, span), args.model_dump()
+    return tool, args, None
 
 
-def run_agent(client, model: str, question: str, span: ChatSpan | None = None
+def run_agent(client, model: str, question: str, span: ChatSpan | None = None,
+              approve: Callable[[ApprovalRequest], Decision] = deny_all
               ) -> AgentRun:
-    """Let the model choose capabilities until it answers or runs out of room."""
+    """Let the model choose capabilities until it answers or runs out of room.
+
+    `approve` is called before any tool marked `requires_approval` runs, and may
+    block for as long as it likes - waiting for a person is not the loop's
+    business. It defaults to refusing, so a caller that forgets to attach one
+    gets a gated agent rather than an ungated one.
+    """
     prompt = prompts.get(
         "agent_loop",
         not_in_docs=NOT_IN_DOCS, no_such_tool=NO_SUCH_TOOL,
         bad_arguments=BAD_ARGUMENTS, tool_failed=TOOL_FAILED,
-        index_unavailable=INDEX_UNAVAILABLE, max_steps=MAX_STEPS,
+        index_unavailable=INDEX_UNAVAILABLE, action_rejected=ACTION_REJECTED,
+        max_steps=MAX_STEPS,
     )
     schemas = tool_schemas()
     messages: list[dict] = [
@@ -360,6 +529,9 @@ def run_agent(client, model: str, question: str, span: ChatSpan | None = None
 
     steps: list[AgentStep] = []
     repeats: dict[tuple[str, str], int] = {}
+    # Actions a person has already refused in this run, so the model cannot
+    # put the same question to them twice by asking again.
+    refused: dict[tuple[str, str], str] = {}
     tokens_in = tokens_out = 0
     model_calls = 0
     deadline = time.perf_counter() + TIME_BUDGET_S
@@ -442,7 +614,80 @@ def run_agent(client, model: str, question: str, span: ChatSpan | None = None
                 return finish("repeated_tool_call",
                               _BOUND_MESSAGES["repeated_tool_call"])
 
-            result, parsed = _invoke(client, model, name, raw, span)
+            tool, args, failure = _resolve(name, raw)
+            parsed = None if args is None else args.model_dump()
+
+            if failure is not None:
+                result = failure
+            elif not tool.requires_approval:
+                result = tool.run(client, model, args, span)
+            else:
+                # A person decides. Keyed on the validated arguments, so
+                # asking for the same action in differently-spelled JSON is
+                # still recognised as the same action.
+                key = (name, json.dumps(parsed, sort_keys=True))
+                if key in refused:
+                    # Already refused once. Re-asking a person the identical
+                    # question is not something the model gets to do.
+                    result = ToolResult(
+                        False, ACTION_REJECTED,
+                        f"{ACTION_REJECTED}: this exact action was already refused "
+                        f"({refused[key]}). It was not put to anyone again. Do "
+                        f"something else or answer without it.")
+                    if span is not None:
+                        span.record("approval_skipped", tool=name, arguments=parsed,
+                                    reason="already refused in this run")
+                else:
+                    request = ApprovalRequest(tool=name, arguments=parsed,
+                                              description=tool.description,
+                                              effect=tool.effect)
+                    if span is not None:
+                        span.record("approval_requested", tool=name,
+                                    arguments=parsed, effect=tool.effect)
+                    waited_from = time.perf_counter()
+                    decision = approve(request)
+                    waited = time.perf_counter() - waited_from
+                    # Waiting for a human is not the agent working, so it does
+                    # not spend the time budget. Without this, any approval
+                    # slower than the budget would fail the run on arrival.
+                    deadline += waited
+
+                    if span is not None:
+                        span.record("approval_decided", tool=name,
+                                    verdict=decision.verdict, reason=decision.reason,
+                                    waited_ms=round(waited * 1000))
+
+                    if decision.verdict == "expired":
+                        # Terminal, but still recorded as a step. A run that
+                        # ends with nothing in `steps` reads as a run that did
+                        # nothing, when in fact it asked and was never answered.
+                        expired = ToolResult(
+                            False, APPROVAL_EXPIRED,
+                            f"{APPROVAL_EXPIRED}: {decision.reason}. The action "
+                            f"did not run and nothing was changed.")
+                        steps.append(AgentStep(
+                            n=len(steps) + 1, tool=name, arguments=parsed,
+                            raw_arguments=raw, ok=False,
+                            signal=APPROVAL_EXPIRED, result=expired.content))
+                        if span is not None:
+                            span.record("tool_call", n=len(steps), tool=name,
+                                        arguments=parsed, raw_arguments=raw,
+                                        ok=False, signal=APPROVAL_EXPIRED,
+                                        result_chars=len(expired.content))
+                        return finish("approval_expired",
+                                      _BOUND_MESSAGES["approval_expired"])
+                    if decision.verdict == "rejected":
+                        reason = decision.reason or "no reason given"
+                        refused[key] = reason
+                        result = ToolResult(
+                            False, ACTION_REJECTED,
+                            f"{ACTION_REJECTED}: a person refused this action "
+                            f"({reason}). It did not run and nothing was changed. "
+                            f"Do not request it again; continue without it or "
+                            f"explain that you could not proceed.")
+                    else:
+                        result = tool.run(client, model, args, span)
+
             step = AgentStep(n=len(steps) + 1, tool=name, arguments=parsed,
                              raw_arguments=raw, ok=result.ok, signal=result.signal,
                              result=result.content)

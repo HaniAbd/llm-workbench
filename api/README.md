@@ -1,6 +1,6 @@
 # api
 
-A FastAPI service that fronts a local Ollama model. Four endpoints: `POST /chat` streams prose over Server-Sent Events, `POST /classify` returns a validated object for one task, `POST /ask` answers questions from this repository's own documentation, and `POST /agent` lets the model choose between the last two and use them in sequence. Every model call leaves one structured log line.
+A FastAPI service that fronts a local Ollama model. `POST /chat` streams prose over Server-Sent Events, `POST /classify` returns a validated object for one task, `POST /ask` answers questions from this repository's own documentation, and `POST /agent` starts a run in which the model chooses its own capabilities — pausing for a person's approval before anything it does changes stored data. Every model call leaves one structured log line.
 
 It exists so the browser never talks to the model directly: the system prompt, sampling settings and the conversation's shape stay on the server, where a client cannot change them.
 
@@ -13,7 +13,8 @@ Two files:
 | `prompts/` | Prompt text as `.md` files, plus the loader that identifies them |
 | `chunking.py`, `embeddings.py`, `store.py` | The document index: splitting markdown, embedding it, storing and searching it in pgvector |
 | `answering.py`, `index_docs.py` | `/ask` and the indexing CLI |
-| `agent.py` | `/agent`: the hand-written tool-calling loop, its bounds and its failure signals |
+| `agent.py` | `/agent`: the hand-written tool-calling loop, its bounds, its failure signals and the approval gate |
+| `runs.py` | Agent runs as addressable resources, so a paused one can be decided on from outside the process |
 | `tracing.py` | Observability seam. Knows nothing about OpenAI or FastAPI |
 
 ## Prerequisites
@@ -552,32 +553,55 @@ The loop is written out by hand in [agent.py](agent.py) — no orchestration
 framework, deliberately. A later step rebuilds the same behaviour on one, and
 that comparison is only worth anything if this version is fully visible.
 
+A run is a **resource, not a response**. It has to be: the loop can stop and
+wait for a person, and an action nobody can see is an action nobody can
+approve. `POST /agent` therefore starts a run and returns its id; everything
+after that is a question about a run.
+
 ```bash
+# start it - 202, because the answer does not exist yet
 curl -s localhost:8000/agent -H 'content-type: application/json' \
-  -d '{"question":"Here is a ticket: \"The app crashes when I open settings.\"
-       Classify it, then tell me what the docs say about tracing."}' | jq
+  -d '{"question":"The file api/README.md was edited. Re-index it."}'
+# {"run_id":"55855e48d32f","status":"running","pending":null,"result":null}
+
+# ask what it is doing; `wait` blocks until it needs you or finishes
+curl -s 'localhost:8000/agent/55855e48d32f?wait=25'
+# {"status":"awaiting_approval",
+#  "pending":{"tool":"reindex_document","arguments":{"path":"api/README.md"},
+#             "effect":"Deletes this document's rows from the search index …",
+#             "expires_in_s":287.4}}
+
+# decide
+curl -s localhost:8000/agent/55855e48d32f/decision \
+  -H 'content-type: application/json' -d '{"approved":true}'
+
+curl -s 'localhost:8000/agent/55855e48d32f?wait=25' | jq .result
 ```
 
 ```jsonc
 {
-  "answer": "...",
+  "answer": "The re-indexing of api/README.md is complete.",
   "stop_reason": "answered",
-  "model_calls": 3,
-  "tools_available": ["search_docs", "classify_ticket"],
+  "model_calls": 2,
+  "tools_available": ["search_docs", "classify_ticket", "reindex_document"],
   "steps": [
-    {"n": 1, "tool": "classify_ticket", "arguments": {"text": "The app crashes…"},
-     "raw_arguments": "{\"text\":\"The app crashes…\"}",
-     "ok": true, "signal": null, "result": "{\"is_support_ticket\": true, …}"},
-    {"n": 2, "tool": "search_docs", "arguments": {"question": "tracing"},
-     "ok": false, "signal": "NOT_IN_DOCS", "result": "NOT_IN_DOCS: the …"}
-  ],
-  "trace": { "events": [ … ] }
+    {"n": 1, "tool": "reindex_document", "arguments": {"path": "api/README.md"},
+     "ok": true, "signal": null,
+     "result": "Re-indexed api/README.md: 53 chunks written. …"}
+  ]
 }
 ```
 
+| | |
+| --- | --- |
+| `POST /agent` | start a run → `202` with a `run_id` |
+| `GET /agent/runs` | every live run, newest first — the approval queue |
+| `GET /agent/{id}?wait=` | the run; `wait` blocks (≤25s) until it needs you or finishes |
+| `POST /agent/{id}/decision` | `{"approved": bool, "reason": str?}` — `409` if there is nothing to decide |
+
 The capabilities are the existing modules, wrapped and otherwise untouched:
 `search_docs` is `answering.answer_question`, `classify_ticket` is
-`classification.classify`.
+`classification.classify`, and `reindex_document` is `index_docs.index_document`.
 
 ### It has to terminate
 
@@ -592,6 +616,7 @@ far — never a silent stop and never an exception.
 | `time_budget` | `TIME_BUDGET_S = 180` | tools that are individually slow; `search_docs` is a whole retrieval-and-answer call |
 | `repeated_tool_call` | `MAX_REPEATED_CALLS = 2` | the same tool with byte-identical arguments, over and over — the classic small-model failure, and the one the other two bounds catch far too late |
 | `empty_response` | — | the model returned neither text nor a tool call |
+| `approval_expired` | `APPROVAL_TIMEOUT_S = 300` | an action needed a person and nobody answered |
 
 A run that hits a bound gets a plain sentence saying so, and nothing else.
 There is deliberately **no** final "now summarise what you have" call: that
@@ -614,6 +639,8 @@ first token of a tool result far more reliably than a JSON field.
 | `NOT_IN_DOCS` | retrieval found nothing. **Not a new name** — it is `answering.REFUSAL_SENTINEL`, the signal retrieval already publishes, reused rather than duplicated |
 | `BAD_ARGUMENTS` | arguments were unparseable, the wrong type, missing, or carried an undeclared key |
 | `NO_SUCH_TOOL` | the model named a tool that does not exist; the reply lists the ones that do |
+| `ACTION_REJECTED` | a person refused a gated action, or it was refused earlier in this run and not put to them again |
+| `APPROVAL_EXPIRED` | nobody decided in time; recorded as a step, and the run stops |
 | `TOOL_FAILED` | the capability raised |
 | `INDEX_UNAVAILABLE` | Postgres is unreachable |
 
@@ -631,6 +658,78 @@ One pydantic model per tool is both the JSON Schema advertised and the
 validator applied — the same trick `classification.py` uses — so the two cannot
 describe different arguments. `extra="forbid"` is what makes an invented key a
 reported error rather than a silently dropped one.
+
+### A person decides before anything changes
+
+Two of the three tools only read, so letting the loop run to completion was
+harmless. The pattern was the problem, not the tools: an agent that can act
+needs a point where a person decides whether the action happens.
+
+**`reindex_document` is the acting tool.** Chosen because this project can
+justify it — it is the one genuine write the codebase already performs, its
+effect is real (a document's rows are deleted from Postgres and re-inserted),
+it is **reversible by running it again**, and it needs no external service and
+no credentials. It also makes a sequence worth having: search the docs, find
+them stale, re-index, search again.
+
+**The gate is the server's, not the model's.** `requires_approval` is a field
+on the tool table in [agent.py](agent.py), read only from there. It is not in
+the JSON Schema the model is shown and there is no argument that reaches it —
+a model that can mark its own action safe has not been gated. Sending
+`{"requires_approval": false}` alongside the real arguments is a
+`BAD_ARGUMENTS` reply, because every argument model is `extra="forbid"`.
+
+Arguments are validated **before** anyone is asked. `ReindexArgs` resolves its
+path against `index_docs.documents()`, so a person is never shown an approval
+for a file that does not exist, and a traversal attempt is a `BAD_ARGUMENTS`
+reply rather than something anyone has to think about.
+
+What a person is shown is the tool, the **validated** arguments, and an
+`effect` string declared on the tool — what the code will do, not what the
+model says it will do.
+
+#### The three answers
+
+| | |
+| --- | --- |
+| **approved** | the tool runs; the step records what it returned |
+| **rejected** | an `ACTION_REJECTED` tool result carrying the reason. **An ordinary outcome** — the model is told it was refused and continues. It does not raise, and the run still ends `answered` |
+| **expired** | nobody answered in `APPROVAL_TIMEOUT_S` (300s). **Terminal**: `stop_reason: "approval_expired"`, nothing changed |
+
+Expiry is the absence of a decision, not a decision, so it stops the run rather
+than becoming something the model can work around. It is still recorded as a
+step — a run that asked and was never answered is not a run that did nothing —
+and a decision arriving afterwards gets a `409`.
+
+**The same refused action is never put to a person twice.** A rejection is
+remembered against its validated arguments for the rest of the run, so asking
+again in differently-spelled JSON is answered from the ledger without anybody
+being disturbed. Re-asking is the model's idea; the model does not get to do it.
+
+**Waiting is not working.** Time spent paused is added back to the run's
+deadline, so `TIME_BUDGET_S` measures the agent working rather than a person
+thinking. Without that, any approval slower than three minutes would fail the
+run the moment it was granted.
+
+#### Where a paused run lives
+
+[runs.py](runs.py) holds runs in memory and executes each on its own thread.
+The obvious cheaper design — let `POST /agent` block until someone answers —
+works, but spends a connection and a threadpool slot per paused run for as long
+as a person takes to look, and forces a browser to hold a request open for
+minutes while polling a second endpoint to discover what it is waiting for.
+
+`?wait=` is the compromise that keeps polling honest: it blocks while the run
+is busy and returns the moment it wants something or finishes, so one call
+serves both "tell me when there is something to approve" and "tell me when it
+is done". It is capped at 25s so a caller cannot pin a thread, and sits under
+the usual 30s proxy timeout.
+
+**This is not durable.** The registry is a dict; restart the process and
+pending approvals are gone. Right for a local workbench, wrong for anything
+else, and the first thing to change if this ever leaves localhost. Finished
+runs are kept for an hour and to a limit of 100, bounded both ways because
+either alone fails.
 
 ### What the model actually does
 
@@ -672,6 +771,37 @@ half as a refusal. The loop reports it verbatim with `stop_reason: "answered"`,
 because that is what the model said. Detecting it would mean string-matching
 the model's prose and inventing a stop reason from a guess.
 
+#### With the acting tool available
+
+A census of ten questions — four pure lookups, two classifications, three
+explicit re-index requests, one ambiguous — with every approval auto-rejected,
+so nothing was changed. Run twice against the shipped prompt, with identical
+results both times.
+
+**The gate fired twice, both on explicit re-index requests.** No lookup and no
+classification proposed a write.
+
+**But it did, on an earlier revision of the prompt.** Before the system prompt
+said anything about actions, the same census requested a re-index while
+answering *"What makes two eval runs comparable?"* — a pure lookup that needed
+nothing of the sort. **That is the case for the gate better than any argument
+could put it**, and worth keeping in view: whether the model proposes a write
+during a read turned out to be a property of the prompt wording, not something
+the model reliably avoids. A gate that depends on prompt wording is not a gate.
+
+**It misses in the other direction, consistently.** *"Re-index the document
+CLAUDE.md so searches are current"* never called the tool at all, in any run.
+And every time it did ask, it named `api/README.md` — including for the
+CLAUDE.md request. It appears to have one document in mind rather than reading
+the path out of the question.
+
+**It respects a refusal.** Every rejection was accepted and explained rather
+than retried, and those runs still finished `answered`.
+
+**A bound fired live for the first time.** One lookup ended
+`repeated_tool_call` — the model asked for the identical search twice over and
+was stopped.
+
 **`NO_SUCH_TOOL` was never reached live.** Asked to use a `delete_repository`
 tool, the model did not invent the name — Ollama appears to constrain the
 function name to the advertised list. The path exists and is covered by a
@@ -683,7 +813,13 @@ Every step is in `trace.events`, using the extension point
 [tracing.py](tracing.py) reserved for it — `agent_start`, one `model_turn` per
 model call, one `tool_call` per capability invoked (with the tool, the parsed
 arguments, the **raw** argument string, `ok`, the signal and the result size),
-`bound_hit` when a bound fires, and `agent_stop` carrying `stop_reason`. No
+`bound_hit` when a bound fires, and `agent_stop` carrying `stop_reason`.
+
+A gated action adds `approval_requested` (tool, arguments, effect) and
+`approval_decided` (verdict, reason, `waited_ms`), in that order, followed by
+the `tool_call` showing what happened next — so the pause, the decision and its
+consequence read in sequence. A second request for an already-refused action
+records `approval_skipped` instead, naming why nobody was asked. No
 schema change was needed for any of it, and the panel renders kinds it has
 never seen.
 
@@ -702,8 +838,10 @@ carries the arguments verbatim.
 
 ### What this does not do
 
-No human approval step, no MCP server, no front end — `/agent` is API-only for
-now. Tools within one model turn run in sequence, not concurrently. And nothing
+No MCP server and no front end — `/agent` is API-only for now, though the run
+resource exists precisely so a front end can be built against it. No
+authentication either: anyone who can reach the API can approve an action, so
+"a person decided" means "someone on localhost decided". Tools within one model turn run in sequence, not concurrently. And nothing
 here retries a model that answers badly; the failures above are reported, not
 smoothed over.
 

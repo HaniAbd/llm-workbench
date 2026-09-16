@@ -14,23 +14,85 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Agent
-         * @description Answer by choosing capabilities, in sequence, until done or out of room.
+         * Start Agent Run
+         * @description Start a run and return its id. Does not wait for it to finish.
          *
-         *     Unlike /ask and /classify this endpoint spans several model calls, so its
-         *     trace covers a whole run: `events` holds one `model_turn` per call and one
-         *     `tool_call` per capability invoked, and the token counts are run totals.
-         *     Each tool that calls the model still opens its own span, so it also leaves
-         *     its own `llm_call` log line.
-         *
-         *     Note what is *not* an error here. A capability that fails - including the
-         *     index being unreachable, which /ask reports as a 503 - comes back as a tool
-         *     result the model is expected to read and act on, so the run continues and
-         *     returns 200. Only the loop's own model call failing is a 502: without the
-         *     model there is no loop. Hitting a bound is likewise a 200 with
-         *     `stop_reason` set, never an exception.
+         *     `202`, not `200`: the answer does not exist yet, and for a run that needs
+         *     an action approved it cannot exist until a person has decided. Poll
+         *     `GET /agent/{run_id}` - with `?wait=` to be told rather than to ask.
          */
-        post: operations["agent_agent_post"];
+        post: operations["start_agent_run_agent_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Agent Runs
+         * @description Every live run, newest first. Filter on `status` for the approval queue.
+         */
+        get: operations["list_agent_runs_agent_runs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Agent Run
+         * @description The run as it stands.
+         *
+         *     `wait` blocks while the run is busy and returns the moment it wants
+         *     something - an approval - or has finished. The same call therefore serves
+         *     "tell me when there is something to decide" and "tell me when it is done",
+         *     which is the difference between a front end that reacts and one that
+         *     polls. It is capped so a caller cannot hold a thread indefinitely.
+         */
+        get: operations["get_agent_run_agent__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/{run_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Decide Agent Run
+         * @description Approve or reject the action a run is waiting on, and release it.
+         *
+         *     A rejection is an ordinary outcome, not an error: the model is told the
+         *     action was refused and why, and carries on. A `409` means there was nothing
+         *     to decide - the run is not waiting, it was decided already, or nobody
+         *     answered in time and it has expired.
+         */
+        post: operations["decide_agent_run_agent__run_id__decision_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -168,10 +230,10 @@ export interface components {
             question: string;
         };
         /**
-         * AgentResponse
-         * @description What the loop did, the steps it took, and the trace behind it.
+         * AgentRun
+         * @description What the loop did, and why it stopped.
          */
-        AgentResponse: {
+        AgentRun: {
             /** Answer */
             answer: string;
             /** Model Calls */
@@ -184,10 +246,9 @@ export interface components {
              * Stop Reason
              * @enum {string}
              */
-            stop_reason: "answered" | "max_steps" | "time_budget" | "repeated_tool_call" | "empty_response";
+            stop_reason: "answered" | "max_steps" | "time_budget" | "repeated_tool_call" | "empty_response" | "approval_expired";
             /** Tools Available */
             tools_available: string[];
-            trace: components["schemas"]["TraceDocument"];
         };
         /**
          * AgentStep
@@ -270,6 +331,16 @@ export interface components {
             text: string;
         };
         /**
+         * DecisionRequest
+         * @description A person's answer to one pending action.
+         */
+        DecisionRequest: {
+            /** Approved */
+            approved: boolean;
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
          * Document
          * @description A source document, as it is on disk now.
          */
@@ -301,6 +372,34 @@ export interface components {
             role: "user" | "assistant";
         };
         /**
+         * PendingApprovalView
+         * @description What the run intends to do, and how long there is to decide.
+         */
+        PendingApprovalView: {
+            /** Arguments */
+            arguments: {
+                [key: string]: unknown;
+            };
+            /** Description */
+            description: string;
+            /** Effect */
+            effect: string | null;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Expires In S */
+            expires_in_s: number;
+            /**
+             * Requested At
+             * Format: date-time
+             */
+            requested_at: string;
+            /** Tool */
+            tool: string;
+        };
+        /**
          * RetrievedPassage
          * @description One passage retrieval returned, with how well it matched.
          */
@@ -313,6 +412,26 @@ export interface components {
             source: string;
             /** Text */
             text: string;
+        };
+        /**
+         * RunView
+         * @description A run, whatever state it is in.
+         */
+        RunView: {
+            /** Error */
+            error?: string | null;
+            pending?: components["schemas"]["PendingApprovalView"] | null;
+            /** Question */
+            question: string;
+            result?: components["schemas"]["AgentRun"] | null;
+            /** Run Id */
+            run_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "awaiting_approval" | "done" | "failed";
+            trace?: components["schemas"]["TraceDocument"] | null;
         };
         /**
          * SentMessage
@@ -414,7 +533,7 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    agent_agent_post: {
+    start_agent_run_agent_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -428,12 +547,101 @@ export interface operations {
         };
         responses: {
             /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_agent_runs_agent_runs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AgentResponse"];
+                    "application/json": components["schemas"]["RunView"][];
+                };
+            };
+        };
+    };
+    get_agent_run_agent__run_id__get: {
+        parameters: {
+            query?: {
+                /** @description Seconds to block until the run needs the caller again. */
+                wait?: number;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_agent_run_agent__run_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunView"];
                 };
             };
             /** @description Validation Error */

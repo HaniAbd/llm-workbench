@@ -15,8 +15,8 @@
         "title": "AgentRequest",
         "type": "object"
       },
-      "AgentResponse": {
-        "description": "What the loop did, the steps it took, and the trace behind it.",
+      "AgentRun": {
+        "description": "What the loop did, and why it stopped.",
         "properties": {
           "answer": {
             "title": "Answer",
@@ -43,7 +43,8 @@
               "max_steps",
               "time_budget",
               "repeated_tool_call",
-              "empty_response"
+              "empty_response",
+              "approval_expired"
             ],
             "title": "Stop Reason",
             "type": "string"
@@ -54,9 +55,6 @@
             },
             "title": "Tools Available",
             "type": "array"
-          },
-          "trace": {
-            "$ref": "#/components/schemas/TraceDocument"
           }
         },
         "required": [
@@ -65,10 +63,9 @@
           "steps",
           "model_calls",
           "tools_available",
-          "prompt_id",
-          "trace"
+          "prompt_id"
         ],
-        "title": "AgentResponse",
+        "title": "AgentRun",
         "type": "object"
       },
       "AgentStep": {
@@ -273,6 +270,31 @@
         "title": "ClassifyRequest",
         "type": "object"
       },
+      "DecisionRequest": {
+        "description": "A person's answer to one pending action.",
+        "properties": {
+          "approved": {
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "approved"
+        ],
+        "title": "DecisionRequest",
+        "type": "object"
+      },
       "Document": {
         "description": "A source document, as it is on disk now.",
         "properties": {
@@ -357,6 +379,60 @@
         "title": "Message",
         "type": "object"
       },
+      "PendingApprovalView": {
+        "description": "What the run intends to do, and how long there is to decide.",
+        "properties": {
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "effect": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effect"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "expires_in_s": {
+            "title": "Expires In S",
+            "type": "number"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "tool": {
+            "title": "Tool",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool",
+          "arguments",
+          "description",
+          "effect",
+          "requested_at",
+          "expires_at",
+          "expires_in_s"
+        ],
+        "title": "PendingApprovalView",
+        "type": "object"
+      },
       "RetrievedPassage": {
         "description": "One passage retrieval returned, with how well it matched.",
         "properties": {
@@ -384,6 +460,77 @@
           "score"
         ],
         "title": "RetrievedPassage",
+        "type": "object"
+      },
+      "RunView": {
+        "description": "A run, whatever state it is in.",
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PendingApprovalView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentRun"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "running",
+              "awaiting_approval",
+              "done",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "trace": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TraceDocument"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "run_id",
+          "question",
+          "status"
+        ],
+        "title": "RunView",
         "type": "object"
       },
       "SentMessage": {
@@ -631,8 +778,8 @@
   "paths": {
     "/agent": {
       "post": {
-        "description": "Answer by choosing capabilities, in sequence, until done or out of room.\n\nUnlike /ask and /classify this endpoint spans several model calls, so its\ntrace covers a whole run: `events` holds one `model_turn` per call and one\n`tool_call` per capability invoked, and the token counts are run totals.\nEach tool that calls the model still opens its own span, so it also leaves\nits own `llm_call` log line.\n\nNote what is *not* an error here. A capability that fails - including the\nindex being unreachable, which /ask reports as a 503 - comes back as a tool\nresult the model is expected to read and act on, so the run continues and\nreturns 200. Only the loop's own model call failing is a 502: without the\nmodel there is no loop. Hitting a bound is likewise a 200 with\n`stop_reason` set, never an exception.",
-        "operationId": "agent_agent_post",
+        "description": "Start a run and return its id. Does not wait for it to finish.\n\n`202`, not `200`: the answer does not exist yet, and for a run that needs\nan action approved it cannot exist until a person has decided. Poll\n`GET /agent/{run_id}` - with `?wait=` to be told rather than to ask.",
+        "operationId": "start_agent_run_agent_post",
         "requestBody": {
           "content": {
             "application/json": {
@@ -644,11 +791,11 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AgentResponse"
+                  "$ref": "#/components/schemas/RunView"
                 }
               }
             },
@@ -665,7 +812,134 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Agent"
+        "summary": "Start Agent Run"
+      }
+    },
+    "/agent/runs": {
+      "get": {
+        "description": "Every live run, newest first. Filter on `status` for the approval queue.",
+        "operationId": "list_agent_runs_agent_runs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RunView"
+                  },
+                  "title": "Response List Agent Runs Agent Runs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Agent Runs"
+      }
+    },
+    "/agent/{run_id}": {
+      "get": {
+        "description": "The run as it stands.\n\n`wait` blocks while the run is busy and returns the moment it wants\nsomething - an approval - or has finished. The same call therefore serves\n\"tell me when there is something to decide\" and \"tell me when it is done\",\nwhich is the difference between a front end that reacts and one that\npolls. It is capped so a caller cannot hold a thread indefinitely.",
+        "operationId": "get_agent_run_agent__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Seconds to block until the run needs the caller again.",
+            "in": "query",
+            "name": "wait",
+            "required": false,
+            "schema": {
+              "default": 0.0,
+              "description": "Seconds to block until the run needs the caller again.",
+              "maximum": 25.0,
+              "minimum": 0.0,
+              "title": "Wait",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Agent Run"
+      }
+    },
+    "/agent/{run_id}/decision": {
+      "post": {
+        "description": "Approve or reject the action a run is waiting on, and release it.\n\nA rejection is an ordinary outcome, not an error: the model is told the\naction was refused and why, and carries on. A `409` means there was nothing\nto decide - the run is not waiting, it was decided already, or nobody\nanswered in time and it has expired.",
+        "operationId": "decide_agent_run_agent__run_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide Agent Run"
       }
     },
     "/ask": {

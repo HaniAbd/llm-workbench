@@ -52,6 +52,32 @@ def documents() -> list[Path]:
     return found
 
 
+def index_document(conn, path: Path) -> int:
+    """Re-index one document. Returns the number of chunks written.
+
+    Extracted from `main()` so that the agent's `reindex_document` tool and
+    this CLI share one implementation - two copies of "how a document is
+    indexed" would drift, and the drift would be invisible until a search
+    returned something stale.
+
+    Wholesale replacement, like the CLI: the document's rows are deleted and
+    re-inserted, so a section removed from the file disappears from the index
+    rather than lingering as an orphan. Never prunes - see `main()`.
+    """
+    rel = path.relative_to(REPO).as_posix()
+    chunks = chunking.chunk_markdown(path.read_text(encoding="utf-8"), rel)
+    if not chunks:
+        return 0
+    vectors = embed([c.embed_text for c in chunks])
+    rows = [
+        {"heading_path": c.heading_path, "ordinal": c.ordinal,
+         "text": c.text, "embedding": v}
+        for c, v in zip(chunks, vectors)
+    ]
+    store.replace_document(conn, rel, rows, MODEL)
+    return len(rows)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("paths", nargs="*", help="documents to index (default: all)")
@@ -82,25 +108,21 @@ def main() -> int:
     try:
         for path in paths:
             rel = path.relative_to(REPO).as_posix()
-            chunks = chunking.chunk_markdown(path.read_text(encoding="utf-8"), rel)
-            if not chunks:
-                print(f"  {rel:<34} empty, skipped")
-                continue
 
             if args.dry_run:
-                print(f"  {rel:<34} {len(chunks):>3} chunks")
+                chunks = chunking.chunk_markdown(
+                    path.read_text(encoding="utf-8"), rel)
+                print(f"  {rel:<34} {len(chunks):>3} chunks"
+                      if chunks else f"  {rel:<34} empty, skipped")
                 total += len(chunks)
                 continue
 
-            vectors = embed([c.embed_text for c in chunks])
-            rows = [
-                {"heading_path": c.heading_path, "ordinal": c.ordinal,
-                 "text": c.text, "embedding": v}
-                for c, v in zip(chunks, vectors)
-            ]
-            store.replace_document(conn, rel, rows, MODEL)
-            print(f"  {rel:<34} {len(rows):>3} chunks")
-            total += len(rows)
+            written = index_document(conn, path)
+            if not written:
+                print(f"  {rel:<34} empty, skipped")
+                continue
+            print(f"  {rel:<34} {written:>3} chunks")
+            total += written
 
         # Only a full run can know what is gone. Indexing a single document
         # says nothing about the others, so pruning there would delete the

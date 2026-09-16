@@ -114,7 +114,7 @@ def test_every_stop_reason_is_published_in_the_schema():
     schemas = json.loads(
         (Path(__file__).resolve().parent.parent / "openapi.json").read_text()
     )["components"]["schemas"]
-    published = set(schemas["AgentResponse"]["properties"]["stop_reason"]["enum"])
+    published = set(schemas["AgentRun"]["properties"]["stop_reason"]["enum"])
     assert published == set(agent.StopReason.__args__)
     assert set(agent._BOUND_MESSAGES) == published - {"answered"}
 

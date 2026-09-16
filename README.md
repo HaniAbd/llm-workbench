@@ -119,6 +119,22 @@ Most of the loop is what happens when things go wrong. It is bounded three ways 
 
 `llama3.2` handles this badly, and the [measured failures](api/README.md#what-the-model-actually-does) are the point: it refuses unanswerable questions well (7/7), but drops half of a two-part request 3 times in 5 — and then fabricates the half it skipped.
 
+### A person decides before anything changes
+
+One tool actually acts: `reindex_document` re-indexes a single document. Before it runs, the loop **stops and waits for a person** — which is why a run is a resource rather than a response, since an action nobody can see is an action nobody can approve.
+
+```bash
+curl -s localhost:8000/agent -d '{"question":"Re-index api/README.md."}' \
+  -H 'content-type: application/json'          # 202 {"run_id": "...", ...}
+curl -s 'localhost:8000/agent/<id>?wait=25'    # awaiting_approval + what it intends
+curl -s localhost:8000/agent/<id>/decision \
+  -H 'content-type: application/json' -d '{"approved":false,"reason":"not now"}'
+```
+
+**Which tools are gated is the server's decision, not the model's** — `requires_approval` is a field on the tool table, absent from the schema the model is shown. Rejection is an ordinary outcome: the model is told and carries on. Nobody answering within five minutes stops the run with `approval_expired` and changes nothing.
+
+It earns its keep. On an earlier revision of the prompt the model proposed re-indexing a document while answering *"What makes two eval runs comparable?"* — a question that needed no such thing.
+
 ## Tests
 
 ```bash

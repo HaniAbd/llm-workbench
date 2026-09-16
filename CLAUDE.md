@@ -34,7 +34,7 @@ There is no real API key anywhere — swapping to a hosted provider is a matter 
 | Dir | Stack | Role |
 | --- | --- | --- |
 | [scripts/](scripts/) | Node ESM, Vercel AI SDK (`ai` + `@ai-sdk/openai`) | Numbered standalone experiments, run directly with `node` |
-| [api/](api/) | FastAPI + `openai` Python SDK | `POST /chat` streams SSE; `POST /classify` returns a schema-constrained object; `POST /ask` answers from the repo's own docs |
+| [api/](api/) | FastAPI + `openai` Python SDK | `POST /chat` streams SSE; `POST /classify` returns a schema-constrained object; `POST /ask` answers from the repo's own docs; `POST /agent` runs a gated tool-calling loop |
 | [web/](web/) | Next.js 16, React 19, Tailwind v4 | `/` chat, `/classify` classifier, `/ask` doc search, all with a trace panel |
 
 They are independent: no shared package, no build step linking them. The only contracts between them are the root `.env` and the SSE protocol below.
@@ -150,6 +150,18 @@ Nothing the model does raises. An unknown tool, unparseable or wrongly-typed arg
 **Malformed arguments are rejected, never coerced**, even where the intent is obvious — a loop that patches the model's mistakes says nothing about the model. The measured failures are documented in `api/README.md` and should be updated, not tuned away: argument quality swings on one line of the prompt (1/9 malformed with it, 6/15 without), and two-part requests lose their second half 3 times in 5, with the skipped half fabricated.
 
 One agent run writes **several** `llm_call` log lines — each tool that calls the model opens its own span — while the returned trace covers the whole run, with run-total token counts and one `tool_call` event per capability invoked.
+
+#### Human approval
+
+`reindex_document` is the one tool that **changes** anything (it re-runs `index_docs.index_document` for one file) and the only gated one. Chosen because it is reversible by re-running, needs no external service or credentials, and is the one genuine write this codebase already performs.
+
+**`requires_approval` is a field on the server's tool table and nothing else.** It is not in the JSON Schema the model sees and no argument reaches it — a model that can mark its own action safe has not been gated. Arguments are validated *before* the gate (`ReindexArgs` resolves its path against `index_docs.documents()`), so nobody is ever asked to approve a path that does not exist and traversal is a `BAD_ARGUMENTS` reply.
+
+Three answers: **approved** runs the tool; **rejected** becomes an `ACTION_REJECTED` tool result carrying the reason, which the model is expected to accept and continue past (the run still ends `answered`); **expired** after `APPROVAL_TIMEOUT_S` (300s) is terminal — `stop_reason: "approval_expired"`, recorded as a step, and a later decision gets a `409`. A refusal is remembered against its validated arguments, so the model cannot put the same question to a person twice. **Time spent paused is added back to the deadline** — `TIME_BUDGET_S` measures the agent working, not a person thinking.
+
+`api/runs.py` makes a paused run addressable from outside the process, which is the whole point: a front end cannot approve what it cannot see. `POST /agent` returns `202` + `run_id`; `GET /agent/{id}?wait=` blocks (≤25s) until the run needs you or finishes; `POST /agent/{id}/decision` releases it; `GET /agent/runs` is the queue. Runs live in a **dict in memory** — restart and pending approvals are gone, which is right for a workbench and wrong for anything else. There is **no authentication**: "a person decided" means "someone on localhost decided".
+
+Measured: with the shipped prompt the gate fires only on explicit re-index requests, but an **earlier prompt revision had the model propose a write while answering a pure lookup**. Whether it does that is prompt-sensitive, which is exactly why the gate is not prompt-based. It also consistently fails the other way — it ignores a re-index request naming `CLAUDE.md` and always names `api/README.md` whatever the question says.
 
 Transport is **inline, deliberately**: a caller only ever sees its own call, so there is no trace store to query and no id to guess. The trade is that every response carries the full rendered prompt — fine locally, the first thing to revisit if this leaves localhost. A `502` carries a trace; a `422` does not, because nothing was called.
 

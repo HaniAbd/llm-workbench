@@ -1,9 +1,11 @@
 import json
 import os
+import time
+from datetime import datetime, timezone
 from typing import Annotated, Any, Literal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from openai import OpenAI, OpenAIError
@@ -12,7 +14,8 @@ from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 import prompts
 import store
-from agent import AgentError, AgentRun, run_agent
+import runs
+from agent import AgentRun
 from answering import Answer, AnsweringError, answer_question, retrieval_config
 from documents import Document, load_document
 from classification import ClassificationError, ClassificationResult, classify
@@ -295,6 +298,13 @@ def get_document(path: str):
 
 
 # --- the agent loop --------------------------------------------------------
+#
+# Unlike every other endpoint here, a run is a *resource* rather than a
+# response. It has to be, because it can stop and wait for a person: an action
+# nobody can see is an action nobody can approve, so the pause has to be
+# reachable from outside the process that is paused. `POST /agent` therefore
+# starts a run and returns its id, and everything after that is a question
+# about a run - what is it waiting for, what did you decide, what did it say.
 
 
 class AgentRequest(BaseModel):
@@ -303,42 +313,115 @@ class AgentRequest(BaseModel):
     question: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
-class AgentResponse(AgentRun):
-    """What the loop did, the steps it took, and the trace behind it."""
+class DecisionRequest(BaseModel):
+    """A person's answer to one pending action."""
 
-    trace: TraceDocument
+    approved: bool
+    # Carried into the tool result the model receives, so a refusal can say
+    # *why* and the model has something to work with beyond "no".
+    reason: str | None = None
 
 
-@app.post("/agent", response_model=AgentResponse)
-def agent(req: AgentRequest):
-    """Answer by choosing capabilities, in sequence, until done or out of room.
+class PendingApprovalView(BaseModel):
+    """What the run intends to do, and how long there is to decide."""
 
-    Unlike /ask and /classify this endpoint spans several model calls, so its
-    trace covers a whole run: `events` holds one `model_turn` per call and one
-    `tool_call` per capability invoked, and the token counts are run totals.
-    Each tool that calls the model still opens its own span, so it also leaves
-    its own `llm_call` log line.
+    tool: str
+    arguments: dict[str, Any]
+    description: str
+    # Declared on the server's tool table, not written by the model: what the
+    # code will actually do, for whoever has to decide.
+    effect: str | None
+    requested_at: datetime
+    expires_at: datetime
+    expires_in_s: float
 
-    Note what is *not* an error here. A capability that fails - including the
-    index being unreachable, which /ask reports as a 503 - comes back as a tool
-    result the model is expected to read and act on, so the run continues and
-    returns 200. Only the loop's own model call failing is a 502: without the
-    model there is no loop. Hitting a bound is likewise a 200 with
-    `stop_reason` set, never an exception.
+
+class RunView(BaseModel):
+    """A run, whatever state it is in."""
+
+    run_id: str
+    question: str
+    status: runs.RunStatus  # type: ignore[valid-type]
+    # Set only while status is `awaiting_approval`.
+    pending: PendingApprovalView | None = None
+    # Set once the run finishes. `result.stop_reason` says how it ended,
+    # including `approval_expired` when nobody answered.
+    result: AgentRun | None = None
+    trace: TraceDocument | None = None
+    error: str | None = None
+
+
+def _utc(timestamp: float) -> datetime:
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+
+
+def _view(run: runs.Run) -> RunView:
+    pending = None
+    if run.pending is not None:
+        pending = PendingApprovalView(
+            tool=run.pending.tool,
+            arguments=run.pending.arguments,
+            description=run.pending.description,
+            effect=run.pending.effect,
+            requested_at=_utc(run.pending.requested_at),
+            expires_at=_utc(run.pending.expires_at),
+            expires_in_s=max(0.0, round(run.pending.expires_at - time.time(), 1)),
+        )
+    return RunView(
+        run_id=run.id, question=run.question, status=run.status,
+        pending=pending, result=run.result, trace=run.trace, error=run.error,
+    )
+
+
+@app.post("/agent", status_code=202, response_model=RunView)
+def start_agent_run(req: AgentRequest):
+    """Start a run and return its id. Does not wait for it to finish.
+
+    `202`, not `200`: the answer does not exist yet, and for a run that needs
+    an action approved it cannot exist until a person has decided. Poll
+    `GET /agent/{run_id}` - with `?wait=` to be told rather than to ask.
     """
-    captured = None
-    try:
-        with chat_span(MODEL) as span:
-            captured = span
-            result = run_agent(client, MODEL, req.question, span)
-    except AgentError as exc:
-        raise HTTPException(
-            status_code=502, detail=_failure(captured, str(exc))
-        ) from exc
-    except OpenAIError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=_failure(captured, f"provider call failed: {type(exc).__name__}"),
-        ) from exc
+    return _view(runs.start(client, MODEL, req.question))
 
-    return AgentResponse(**result.model_dump(), trace=captured.trace())
+
+# Declared before `/agent/{run_id}`, which would otherwise match "runs".
+@app.get("/agent/runs", response_model=list[RunView])
+def list_agent_runs():
+    """Every live run, newest first. Filter on `status` for the approval queue."""
+    return [_view(run) for run in runs.listing()]
+
+
+@app.get("/agent/{run_id}", response_model=RunView)
+def get_agent_run(run_id: str, wait: float = Query(
+        0.0, ge=0.0, le=runs.MAX_WAIT_S,
+        description="Seconds to block until the run needs the caller again.")):
+    """The run as it stands.
+
+    `wait` blocks while the run is busy and returns the moment it wants
+    something - an approval - or has finished. The same call therefore serves
+    "tell me when there is something to decide" and "tell me when it is done",
+    which is the difference between a front end that reacts and one that
+    polls. It is capped so a caller cannot hold a thread indefinitely.
+    """
+    run = runs.get(run_id, wait=wait)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"no run {run_id!r}")
+    return _view(run)
+
+
+@app.post("/agent/{run_id}/decision", response_model=RunView)
+def decide_agent_run(run_id: str, decision: DecisionRequest):
+    """Approve or reject the action a run is waiting on, and release it.
+
+    A rejection is an ordinary outcome, not an error: the model is told the
+    action was refused and why, and carries on. A `409` means there was nothing
+    to decide - the run is not waiting, it was decided already, or nobody
+    answered in time and it has expired.
+    """
+    try:
+        run = runs.decide(run_id, decision.approved, decision.reason)
+    except runs.DecisionRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"no run {run_id!r}")
+    return _view(run)
