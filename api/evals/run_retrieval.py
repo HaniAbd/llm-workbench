@@ -36,6 +36,33 @@ import retrieval_scoring as scoring  # noqa: E402
 
 DATA = json.loads((HERE / "retrieval_cases.json").read_text())
 
+# Ceilings on what one case's record keeps, not a routine trim: both sit above
+# anything this corpus currently produces (the longest chunk is 1780 chars and
+# answers run to a few hundred), so nothing is cut today. They exist because the
+# corpus grows - it went from 59 chunks to 101 in a day - and five runs of
+# unbounded text is how a detail directory quietly becomes the largest thing in
+# the repository. Measured at full length: ~124 KB per run, ~0.6 MB for the five
+# that are kept.
+#
+# A head-clip on a passage would be worse than no text at all if it were applied
+# routinely: the phrase an expectation matched on can sit anywhere in a chunk, so
+# a clipped passage could show `found: true` with nothing in the record that
+# supports it. That is why the ceiling is set above the data rather than chosen
+# to save space, and why clipping is always recorded.
+MAX_PASSAGE_CHARS = 2000
+MAX_ANSWER_CHARS = 4000
+
+
+def _clipped(field: str, text: str, limit: int) -> dict:
+    """`{field: text}`, plus a note of what was dropped if anything was.
+
+    Truncation is never silent: a reader who cannot see the phrase an
+    expectation matched needs to know whether it was absent or merely cut.
+    """
+    if len(text) <= limit:
+        return {field: text}
+    return {field: text[:limit], f"{field}_truncated_from": len(text)}
+
 # The /ask prompt is rendered with the retrieved passages, so the prompt_id the
 # API returns is different for every question - it identifies the request, not
 # the prompt. For attributing a whole run to a prompt version, the stable
@@ -106,19 +133,42 @@ def run_once(api: str, cases: list) -> dict:
             prompt_ids.add(body["prompt_id"])
         ks.add(len(retrieved))
 
+        expected = case["expect"].get("passages", [])
         if status != 200:
             metrics = {"retrieval": None, "answer": 0.0}
-            detail = {"status": status, "error": str(body.get("detail"))[:120]}
-        else:
-            metrics = scoring.score_case(case, retrieved, answer)
-            expected = case["expect"].get("passages", [])
             detail = {
                 "status": status,
-                "top_score": retrieved[0]["score"] if retrieved else None,
+                "question": case["question"],
+                "expected": [dict(e) for e in expected],
+                "error": str(body.get("detail"))[:400],
+            }
+        else:
+            metrics = scoring.score_case(case, retrieved, answer)
+            detail = {
+                "status": status,
+                # Asked and expected as they stood for *this* run. Both live in
+                # a tracked file that is edited, so a record that only pointed
+                # at them would explain an old score using today's dataset.
+                "question": case["question"],
+                "expected": [dict(e) for e in expected],
                 "refused": scoring.refused(answer),
                 "found": scoring.matched_passages(expected, retrieved),
-                "expected": [e["contains"][:40] for e in expected],
-                "answer": " ".join(answer.split())[:200],
+                "top_score": retrieved[0]["score"] if retrieved else None,
+                **_clipped("answer", " ".join(answer.split()), MAX_ANSWER_CHARS),
+                # The evidence. Ordered as retrieval returned them, with the
+                # text each score was computed against, so a reader can redo
+                # the judgement without the index, the model or the corpus
+                # still being as they were.
+                "retrieved": [
+                    {
+                        "rank": rank,
+                        "source": r["source"],
+                        "heading_path": r["heading_path"],
+                        "score": r["score"],
+                        **_clipped("text", r.get("text", ""), MAX_PASSAGE_CHARS),
+                    }
+                    for rank, r in enumerate(retrieved, 1)
+                ],
             }
 
         results[case["id"]] = {"group": case["group"], "metrics": metrics, "detail": detail}

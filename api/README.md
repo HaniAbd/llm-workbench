@@ -240,9 +240,32 @@ Two files per suite, for two different lifetimes:
 | | Contents | Size | Tracked |
 | --- | --- | --- | --- |
 | `runs.jsonl` / `retrieval_runs.jsonl` | scores, digests, configuration, per-case **metrics** | ~3-6KB per run | **yes** - this is the history |
-| `runs_detail/` / `retrieval_runs_detail/` | per-case **detail**: observed values, answer excerpts, which passages matched | ~5-10KB per run | no, gitignored |
+| `runs_detail/` | classifier per-case **observed values** | ~5-10KB per run | no, gitignored |
+| `retrieval_runs_detail/` | retrieval per-case **evidence**: the question, the expectations, the answer, and every passage retrieved, in order, with its text | ~150KB per run | no, gitignored |
 
 The split is drawn where it is because of what a comparison needs. A baseline run is only ever read through its per-case metrics and its set of case ids - the observed values and answer excerpts are read from the *current* run alone. So the history can be slimmed without any comparison losing information, and migrating the existing records changed no score, digest or metric.
+
+#### A retrieval detail has to stand on its own
+
+It used to keep the verdict and not the evidence: `found: [false]` with no record of what *was* retrieved, expectations clipped to 40 characters and the answer to 200. Diagnosing a past failure therefore meant re-querying the live endpoint, which only works while the index, the model and the corpus are still as they were — so any run older than the current index was undiagnosable. That was found the hard way, auditing nine regressions against a corpus that had since grown from 59 chunks to 101.
+
+A retrieval case now records **the question and the expectations as they stood for that run** — both live in a tracked file that gets edited, so a record that merely pointed at them would explain an old score using today's dataset — plus `refused`, `found`, and:
+
+```jsonc
+"retrieved": [
+  {"rank": 1, "source": "api/README.md",
+   "heading_path": "api > `POST /ask` … > Indexing",
+   "score": 0.688,
+   "text": "…the passage as it was scored against…"},
+  …
+]
+```
+
+Ordered as retrieval returned them, with the text each score was computed against. **Order is the point**: reranking is judged on which passages come back and in what position, and a record that kept only a set could not show a reordering at all.
+
+It pays for itself immediately. From the stored file alone — no database, no API — `vocab_stop_invented_category` reads as *"the expected phrase was retrieved, at rank 3, but from `CLAUDE.md` rather than the `api/README.md` the case names"*, which is a different finding from *"retrieval missed it"*, and `direct_finish_reason_length` reads as the phrase being absent from all four passages, which is the same finding. Neither is visible from a `found: false`.
+
+**Size, measured rather than assumed.** The longest chunk in this corpus is 1780 characters and answers run to a few hundred, so a run costs ~150KB and the five that are kept ~0.75MB. `MAX_PASSAGE_CHARS` (2000) and `MAX_ANSWER_CHARS` (4000) sit *above* that: they are a ceiling against a corpus that grows — it gained 42 chunks in a day — not a routine trim, and nothing is clipped today. When one does fire it is recorded on the item as `text_truncated_from: <original length>`, never applied quietly. A routine head-clip would have been worse than storing no text at all: the phrase an expectation matches can sit anywhere in a chunk, so a clipped passage could show `found: true` with nothing in the record supporting it.
 
 Detail is kept for the most recent `KEEP_DETAIL_FOR` runs (5) and pruned on the next run. Read it with:
 
@@ -250,6 +273,8 @@ Detail is kept for the most recent `KEEP_DETAIL_FOR` runs (5) and pruned on the 
 python evals/run_retrieval.py --detail            # the most recent run
 python evals/run_retrieval.py --detail 30ff85d1   # a specific run
 ```
+
+`--detail` prints one flattened line per case and truncates it, so it shows the verdict rather than the passages. The file itself is the artefact — `jq '.cases.<id>.detail.retrieved' retrieval_runs_detail/<run>.json` is what answers "why".
 
 An older run answers honestly rather than silently: the history still knows its scores, nothing knows its excerpts any more, and the command says which runs still have detail.
 
