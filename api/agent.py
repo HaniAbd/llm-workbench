@@ -347,10 +347,15 @@ def _run_reindex(client, model: str, args: ReindexArgs, span: ChatSpan) -> ToolR
         return ToolResult(False, INDEX_UNAVAILABLE,
                           f"{INDEX_UNAVAILABLE}: the document index is not reachable, "
                           "so nothing was re-indexed. Do not retry this tool.")
-    except OSError as exc:
+    except (OSError, index_docs.NotIndexable) as exc:
+        # `NotIndexable` covers the window between validating the argument and
+        # running the action: approval can take minutes, and the document may
+        # have been deleted or moved somewhere excluded in the meantime. Before
+        # the indexer enforced its own exclusion that arrived as a plain
+        # `FileNotFoundError`; it is still a failed tool call, not a dead run.
         return ToolResult(False, TOOL_FAILED,
-                          f"{TOOL_FAILED}: reindex_document could not read "
-                          f"{args.path}: {type(exc).__name__}.")
+                          f"{TOOL_FAILED}: reindex_document could not index "
+                          f"{args.path}: {exc}.")
 
     return ToolResult(
         True, None,

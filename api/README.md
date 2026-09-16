@@ -387,7 +387,16 @@ python index_docs.py ../README.md    # one document
 
 A document is replaced wholesale rather than diffed, so a deleted section disappears instead of lingering as an orphan that can still be retrieved. A **full** run also prunes documents no longer on disk; indexing a single document cannot, since it knows nothing about the others.
 
-`api/prompts/` is excluded by directory prefix — indexing prompts would let the model retrieve its own instructions and answer with them.
+#### What may be indexed
+
+`api/prompts/` is excluded by directory prefix — indexing prompts would let the model retrieve its own instructions and answer with them. Also excluded: anything under `.venv`, `node_modules` and friends, and anything that is not a `.md` file.
+
+The exclusion is enforced **on `index_document()`, the one function that writes**, not on each caller. That is the whole design: it previously lived in `documents()` alone, so a full run was protected and `python index_docs.py api/prompts/classify_ticket.md` was not — the prefix was skipped entirely and the prompt went into the corpus the model answers from. The protection existed and did not hold.
+
+`_rejection()` is the single definition of what belongs in the corpus; `documents()` filters with it and `index_document()` raises `NotIndexable` on it, so there is no route into the index that avoids it. A test asserts the two agree, which is what stops the reverse bug — `documents()` offering something `index_document` would then refuse, failing a full run halfway.
+
+Refusals are reported, not raised at the terminal. An explicit path that is a prompt, outside the repository, not markdown, or not a file is refused by name with a reason and a non-zero exit; a path outside the repository used to be an uncaught `ValueError` from `relative_to`. One bad path **refuses the whole batch** rather than indexing the rest, since a refusal partway through leaves the index half-updated with nothing to say which half.
+
 
 ### How the splitting works
 

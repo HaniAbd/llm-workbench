@@ -40,16 +40,57 @@ EXCLUDE_DIRS = {".git", ".venv", "node_modules", ".next", ".pytest_cache", "__py
 EXCLUDE_PREFIXES = ("api/prompts/",)
 
 
+class NotIndexable(ValueError):
+    """This path must not become part of the document corpus.
+
+    Raised rather than returned, and raised rather than skipped: a caller that
+    forgets to check gets an error, and a caller that asked for something
+    excluded is told so instead of being quietly given nothing.
+    """
+
+
+def _rejection(resolved: Path) -> str | None:
+    """Why `resolved` may not be indexed, or None if it may be.
+
+    The single definition of what belongs in the corpus. `documents()` filters
+    with it and `index_document()` enforces it, which is the whole point: the
+    exclusion used to live in `documents()` alone, so naming a prompt file
+    explicitly walked straight past it and indexed the model's own
+    instructions. A rule that only applies on the path someone remembered to
+    guard is not a rule.
+
+    Takes an already-absolute path and does no I/O beyond what the caller has
+    done, so it is cheap enough to run over every file in the tree.
+    """
+    # First, because everything below reads a repository-relative path.
+    if not resolved.is_relative_to(REPO):
+        return "outside the repository"
+    rel = resolved.relative_to(REPO)
+    if resolved.suffix != ".md":
+        return "not a markdown file"
+    if EXCLUDE_DIRS & set(rel.parts):
+        return "inside an excluded directory"
+    if rel.as_posix().startswith(EXCLUDE_PREFIXES):
+        return ("a prompt, not documentation - indexing it would let the model "
+                "retrieve its own instructions as an answer")
+    return None
+
+
+def check_indexable(path: Path) -> Path:
+    """Resolve `path` and confirm it may be indexed, or raise `NotIndexable`."""
+    resolved = Path(path).resolve()
+    reason = _rejection(resolved)
+    if reason is not None:
+        raise NotIndexable(f"{path}: {reason}")
+    if not resolved.is_file():
+        raise NotIndexable(f"{path}: not a file")
+    return resolved
+
+
 def documents() -> list[Path]:
-    found = []
-    for path in sorted(REPO.rglob("*.md")):
-        rel = path.relative_to(REPO).as_posix()
-        if EXCLUDE_DIRS & set(path.relative_to(REPO).parts):
-            continue
-        if rel.startswith(EXCLUDE_PREFIXES):
-            continue
-        found.append(path)
-    return found
+    """Every document the corpus is allowed to contain."""
+    return [path for path in sorted(REPO.rglob("*.md"))
+            if _rejection(path) is None]
 
 
 def index_document(conn, path: Path) -> int:
@@ -63,7 +104,12 @@ def index_document(conn, path: Path) -> int:
     Wholesale replacement, like the CLI: the document's rows are deleted and
     re-inserted, so a section removed from the file disappears from the index
     rather than lingering as an orphan. Never prunes - see `main()`.
+
+    The exclusion is enforced *here*, on the one function that writes, rather
+    than by each caller. Anything that reaches the index goes through this
+    line, so there is no second path to forget about.
     """
+    path = check_indexable(path)
     rel = path.relative_to(REPO).as_posix()
     chunks = chunking.chunk_markdown(path.read_text(encoding="utf-8"), rel)
     if not chunks:
@@ -93,7 +139,26 @@ def main() -> int:
         print(f"model: {s['models'] or '-'}   last indexed: {s['indexed_at'] or 'never'}")
         return 0
 
-    paths = [Path(p).resolve() for p in args.paths] if args.paths else documents()
+    if args.paths:
+        # Checked up front and as a batch: a refusal halfway through an
+        # explicit list would leave the index half-updated with no obvious
+        # way to tell which half. `index_document` checks again - this is for
+        # the message, that is for the guarantee.
+        paths, refused = [], []
+        for given in args.paths:
+            try:
+                paths.append(check_indexable(Path(given)))
+            except NotIndexable as exc:
+                refused.append(str(exc))
+        if refused:
+            for reason in refused:
+                print(f"refused: {reason}", file=sys.stderr)
+            print(f"\nrefused {len(refused)} of {len(args.paths)} paths; "
+                  f"nothing was indexed", file=sys.stderr)
+            return 1
+    else:
+        paths = documents()
+
     if not paths:
         print("no markdown found")
         return 1
