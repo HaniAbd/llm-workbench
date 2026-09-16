@@ -29,15 +29,44 @@ from embeddings import MODEL, embed  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 
-# Documentation only. Excluded on purpose:
-#   .venv, node_modules   third-party docs, thousands of files
-#   .pytest_cache         a generated stub that explains nothing
-#   api/prompts/*.md      prompts, not documentation - indexing them would let
-#                         the model retrieve its own instructions as an answer
+# Directories whose contents are third-party or generated, wherever they turn
+# up in the tree. A name rather than a path, because `.venv` is `.venv` at any
+# depth; they share one reason, which is why they are a set and not the mapping
+# below.
 EXCLUDE_DIRS = {".git", ".venv", "node_modules", ".next", ".pytest_cache", "__pycache__"}
-# A directory prefix, not a list of filenames: enumerating prompts by name
-# silently lets the next prompt added leak into the corpus.
-EXCLUDE_PREFIXES = ("api/prompts/",)
+
+# Paths kept out of the corpus, each with the reason it is kept out.
+#
+# A mapping rather than a list, because the reason is the valuable half: it is
+# what reaches whoever asked for the file, and the only record of why the rule
+# exists. Adding an exclusion is therefore one line of data here and no change
+# to `_rejection` - which is the property worth having, since the second
+# exclusion is where a rule usually becomes a special case and the third is
+# where it becomes an argument.
+#
+# A pattern ending in "/" is a directory prefix; anything else is an exact
+# path. Prompts are a prefix on purpose - naming them individually would let
+# the next prompt added leak into the corpus - while a generated file is one
+# named file, and matching it as a prefix would also swallow, say, a
+# `web/CLAUDE.md.bak` that nobody excluded.
+EXCLUDED_PATHS = {
+    "api/prompts/": (
+        "a prompt, not documentation - indexing it would let the model "
+        "retrieve its own instructions as an answer"
+    ),
+    "web/AGENTS.md": (
+        "written by `next dev` and re-added whenever it runs - it describes "
+        "Next.js in general, not this project"
+    ),
+    "web/CLAUDE.md": (
+        "a one-line pointer to web/AGENTS.md, with no content of its own"
+    ),
+}
+
+
+def _matches(rel: str, pattern: str) -> bool:
+    """Directory prefix if the pattern ends in "/", otherwise an exact path."""
+    return rel.startswith(pattern) if pattern.endswith("/") else rel == pattern
 
 
 class NotIndexable(ValueError):
@@ -70,9 +99,10 @@ def _rejection(resolved: Path) -> str | None:
         return "not a markdown file"
     if EXCLUDE_DIRS & set(rel.parts):
         return "inside an excluded directory"
-    if rel.as_posix().startswith(EXCLUDE_PREFIXES):
-        return ("a prompt, not documentation - indexing it would let the model "
-                "retrieve its own instructions as an answer")
+    posix = rel.as_posix()
+    for pattern, reason in EXCLUDED_PATHS.items():
+        if _matches(posix, pattern):
+            return reason
     return None
 
 
@@ -192,6 +222,10 @@ def main() -> int:
         # Only a full run can know what is gone. Indexing a single document
         # says nothing about the others, so pruning there would delete the
         # entire rest of the index.
+        #
+        # "Gone" covers two cases now: deleted from disk, and still on disk but
+        # no longer in the corpus because it was excluded. Both leave rows
+        # behind that a search could still return, so both are pruned.
         if conn and not args.paths:
             keep = [p.relative_to(REPO).as_posix() for p in paths]
             removed = store.prune(conn, keep)
@@ -202,7 +236,7 @@ def main() -> int:
     verb = "would index" if args.dry_run else "indexed"
     print(f"\n{verb} {total} chunks from {len(paths)} documents using {MODEL}")
     if removed:
-        print(f"pruned {removed} chunks from documents no longer on disk")
+        print(f"pruned {removed} chunks from documents no longer in the corpus")
     return 0
 
 

@@ -341,7 +341,7 @@ Needs Postgres and an embedding model, neither of which the chat model provides:
 ```bash
 docker compose up -d                 # pgvector on localhost:5433
 ollama pull nomic-embed-text         # 768-dim, trained for retrieval
-cd api && python index_docs.py       # 51 chunks from 6 documents
+cd api && python index_docs.py       # 99 chunks from 4 documents
 ```
 
 `llama3.2` can produce vectors, but they are a by-product of a model trained to continue text, and at 3072 dimensions they exceed pgvector's 2000-dimension index limit. Vectors from different models are not comparable, so changing `EMBEDDING_MODEL` means changing `EMBEDDING_DIM` and re-indexing.
@@ -385,17 +385,33 @@ python index_docs.py --stats         # what is indexed, no work done
 python index_docs.py ../README.md    # one document
 ```
 
-A document is replaced wholesale rather than diffed, so a deleted section disappears instead of lingering as an orphan that can still be retrieved. A **full** run also prunes documents no longer on disk; indexing a single document cannot, since it knows nothing about the others.
+A document is replaced wholesale rather than diffed, so a deleted section disappears instead of lingering as an orphan that can still be retrieved. A **full** run also prunes documents no longer in the corpus — deleted from disk, or still there but newly excluded; indexing a single document cannot, since it knows nothing about the others.
 
 #### What may be indexed
 
-`api/prompts/` is excluded by directory prefix — indexing prompts would let the model retrieve its own instructions and answer with them. Also excluded: anything under `.venv`, `node_modules` and friends, and anything that is not a `.md` file.
+The corpus is four documents: this file, the root `README.md` and `CLAUDE.md`, and `web/README.md`. All four were written for this project, which is the bar.
+
+`EXCLUDED_PATHS` is a **mapping of path to the reason it is excluded**, not a list:
+
+| Excluded | Why |
+| --- | --- |
+| `api/prompts/` | prompts, not documentation — indexing them would let the model retrieve its own instructions as an answer |
+| `web/AGENTS.md` | written by `next dev` and re-added whenever it runs; describes Next.js in general, not this project |
+| `web/CLAUDE.md` | a one-line pointer to `web/AGENTS.md`, with no content of its own |
+
+A mapping because **the reason is the valuable half** — it is what reaches whoever asked for the file, and the only record of why the rule exists. Adding an exclusion is one line of data and no change to `_rejection()`, which matters because the second exclusion is where a rule usually becomes a special case. A test adds an entry at runtime and asserts it takes effect, so that stays true.
+
+A pattern ending in `/` is a directory prefix; anything else is an exact path. Prompts are a prefix deliberately — naming them one by one lets the next prompt added leak in — while a generated file is one named file, and matching *it* as a prefix would also swallow a `web/CLAUDE.md.bak` nobody excluded.
+
+Also excluded, by separate rules with one shared reason each: anything under `.venv`, `node_modules` and friends (a directory *name* at any depth, not a path), and anything that is not a `.md` file.
+
+**`web/README.md` was rewritten rather than excluded.** It was stock `create-next-app` text — four chunks about Vercel, `nextjs.org` and `bun dev`, describing nothing here. Excluding it would have been easier and wrong: `web/` is a third of this repository and had no description at all. It now documents the four pages, the generated-types contract and the shared components, and answers questions retrieval previously could not.
 
 The exclusion is enforced **on `index_document()`, the one function that writes**, not on each caller. That is the whole design: it previously lived in `documents()` alone, so a full run was protected and `python index_docs.py api/prompts/classify_ticket.md` was not — the prefix was skipped entirely and the prompt went into the corpus the model answers from. The protection existed and did not hold.
 
 `_rejection()` is the single definition of what belongs in the corpus; `documents()` filters with it and `index_document()` raises `NotIndexable` on it, so there is no route into the index that avoids it. A test asserts the two agree, which is what stops the reverse bug — `documents()` offering something `index_document` would then refuse, failing a full run halfway.
 
-Refusals are reported, not raised at the terminal. An explicit path that is a prompt, outside the repository, not markdown, or not a file is refused by name with a reason and a non-zero exit; a path outside the repository used to be an uncaught `ValueError` from `relative_to`. One bad path **refuses the whole batch** rather than indexing the rest, since a refusal partway through leaves the index half-updated with nothing to say which half.
+Refusals are reported, not raised at the terminal. An explicit path that is excluded, outside the repository, not markdown, or not a file is refused by name with a reason and a non-zero exit; a path outside the repository used to be an uncaught `ValueError` from `relative_to`. One bad path **refuses the whole batch** rather than indexing the rest, since a refusal partway through leaves the index half-updated with nothing to say which half.
 
 
 ### How the splitting works

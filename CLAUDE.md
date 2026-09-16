@@ -64,12 +64,16 @@ CORS accepts **any localhost port** via `allow_origin_regex`, not a fixed origin
 Answers questions from the repo's own markdown. Needs two things the rest does not: **Postgres with pgvector** (`docker compose up -d`, port 5433) and an **embedding model** (`ollama pull nomic-embed-text`, 768-dim). `llama3.2` can embed but at 3072 dims exceeds pgvector's 2000-dim index limit and is not trained for similarity.
 
 ```bash
-cd api && python index_docs.py     # 51 chunks from 6 documents
+cd api && python index_docs.py     # 99 chunks from 4 documents
 ```
 
-Indexing is a **separate operation**; the API reads the index per request, so re-indexing needs no restart. Chunks follow markdown heading structure, and the heading path (`api/README.md > CI > What CI cannot cover`) travels with the chunk — it is prepended before embedding *and* is what makes a passage citable. `api/prompts/` is excluded by prefix so the model cannot retrieve its own instructions.
+Indexing is a **separate operation**; the API reads the index per request, so re-indexing needs no restart. Chunks follow markdown heading structure, and the heading path (`api/README.md > CI > What CI cannot cover`) travels with the chunk — it is prepended before embedding *and* is what makes a passage citable. The corpus is four documents — `README.md`, `CLAUDE.md`, `api/README.md`, `web/README.md` — all written for this project.
 
-**That exclusion is enforced on `index_document()`, the function that writes, not on its callers.** It used to live in `documents()` alone, which meant a full run was protected and naming a prompt file explicitly was not. `_rejection()` is the one definition of the corpus boundary — `documents()` filters with it, `index_document()` raises `NotIndexable` on it — so adding a new way to index something cannot reintroduce the gap. Explicit paths are checked up front as a **batch**: one refusal indexes nothing, rather than leaving the index half-updated.
+`EXCLUDED_PATHS` maps a path to **the reason it is excluded**: `api/prompts/` (the model would retrieve its own instructions), `web/AGENTS.md` (written by `next dev`, about Next.js), `web/CLAUDE.md` (a one-line pointer). A mapping because the reason is the half that matters — adding an exclusion is a line of data and no change to `_rejection()`, which a test enforces by adding one at runtime. A pattern ending in `/` is a directory prefix, anything else an exact path, so prompts stay covered as a group while a named file cannot swallow a neighbour.
+
+**`web/README.md` was rewritten, not excluded** — it was stock `create-next-app` boilerplate, and `web/` had no real description anywhere. Some scaffolding is worth writing rather than dropping.
+
+**The exclusion is enforced on `index_document()`, the function that writes, not on its callers.** It used to live in `documents()` alone, which meant a full run was protected and naming a prompt file explicitly was not. `_rejection()` is the one definition of the corpus boundary — `documents()` filters with it, `index_document()` raises `NotIndexable` on it — so adding a new way to index something cannot reintroduce the gap. Explicit paths are checked up front as a **batch**: one refusal indexes nothing, rather than leaving the index half-updated.
 
 Selection is a candidate pool of 20 by cosine similarity, then the top three plus **one slot reserved for a document not already represented** — plain top-k is source-blind and one document would fill every slot on a question whose answer spans two (retrieval 0.619 → 0.691). A flat per-source cap, hybrid lexical+vector (RRF), and k=6 were all measured and reverted; see `api/README.md` for the numbers. Still no reranking, no keyword search.
 

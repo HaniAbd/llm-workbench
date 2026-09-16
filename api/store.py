@@ -73,10 +73,13 @@ def replace_document(conn, source: str, rows: list[dict], model: str) -> int:
 
 
 def prune(conn, keep_sources: list[str]) -> int:
-    """Drop chunks whose document is no longer on disk.
+    """Drop chunks whose document is no longer part of the corpus.
+
+    Two ways to leave it: deleted from disk, or excluded from indexing while
+    still sitting there. Either way the rows would otherwise stay searchable.
 
     Only meaningful after a full run: re-indexing one document says nothing
-    about whether the others still exist.
+    about whether the others still belong.
     """
     with conn.cursor() as cur:
         cur.execute("DELETE FROM doc_chunks WHERE source <> ALL(%s)", (keep_sources,))

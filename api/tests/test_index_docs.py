@@ -17,7 +17,14 @@ from pathlib import Path
 import pytest
 
 import index_docs
-from index_docs import REPO, NotIndexable, check_indexable, documents, index_document
+from index_docs import (
+    EXCLUDED_PATHS,
+    REPO,
+    NotIndexable,
+    check_indexable,
+    documents,
+    index_document,
+)
 
 PROMPT = "api/prompts/classify_ticket.md"
 
@@ -143,3 +150,79 @@ def test_one_bad_path_refuses_the_whole_batch(monkeypatch, capsys):
 def test_cli_still_accepts_a_real_document(monkeypatch, capsys):
     assert _run_cli(monkeypatch, "../README.md") == 0
     assert "would index" in capsys.readouterr().out
+
+
+# --- excluding a second kind of thing ---------------------------------------
+#
+# The prompt exclusion was the only one for a while. Scaffolding - a generated
+# file, a pointer file - is the second, and the second exclusion is where a
+# rule usually turns into a special case. These check that it did not.
+
+
+@pytest.mark.parametrize("rel, reason", [
+    ("web/AGENTS.md", "next dev"),
+    ("web/CLAUDE.md", "pointer"),
+])
+def test_scaffolding_is_excluded_with_its_own_reason(rel, reason):
+    """Each exclusion says why it exists, in its own words.
+
+    One shared reason across unlike things would be the giveaway that the
+    second exclusion was bolted onto the first.
+    """
+    assert _abs(rel) not in documents()
+    with pytest.raises(NotIndexable, match=reason):
+        index_document(None, _abs(rel))
+
+
+def test_adding_an_exclusion_is_data_not_code(monkeypatch):
+    """The property worth having: a new exclusion needs no change to
+    `_rejection`, only an entry with a reason.
+
+    Asserted by adding one at runtime. If this ever needs a branch somewhere
+    to pass, the rule has become a special case again.
+    """
+    monkeypatch.setitem(EXCLUDED_PATHS, "README.md", "excluded by this test")
+    with pytest.raises(NotIndexable, match="excluded by this test"):
+        check_indexable(REPO / "README.md")
+    assert (REPO / "README.md") not in documents()
+
+
+def test_every_exclusion_carries_a_reason():
+    """An exclusion with no reason is an exclusion nobody can argue with."""
+    for pattern, reason in EXCLUDED_PATHS.items():
+        assert reason.strip(), f"{pattern} is excluded without saying why"
+        assert len(reason) > 20, f"{pattern}'s reason explains nothing"
+
+
+def test_a_directory_prefix_and_an_exact_path_behave_differently():
+    """Prompts are a prefix, so the next one added is covered. A named file is
+    exact, so it cannot swallow a neighbour nobody excluded."""
+    assert "api/prompts/" in EXCLUDED_PATHS
+    assert "web/CLAUDE.md" in EXCLUDED_PATHS
+
+    # prefix: anything beneath it
+    with pytest.raises(NotIndexable):
+        check_indexable(_abs("api/prompts/anything/at/all.md"))
+
+    # exact: a longer name starting with it is a different file. It does not
+    # exist, so the refusal must be about that rather than about exclusion.
+    with pytest.raises(NotIndexable, match="not a file"):
+        check_indexable(_abs("web/CLAUDE.md.bak.md"))
+
+
+# --- what the corpus is now -------------------------------------------------
+
+
+def test_the_corpus_holds_only_documents_written_for_this_project():
+    listed = {p.relative_to(REPO).as_posix() for p in documents()}
+    assert listed == {"CLAUDE.md", "README.md", "api/README.md", "web/README.md"}
+
+
+def test_the_front_end_readme_was_rewritten_rather_than_excluded():
+    """It was stock create-next-app text; it is in the corpus because it now
+    says something true about this project, not because it was left alone."""
+    text = (REPO / "web/README.md").read_text(encoding="utf-8")
+    assert "create-next-app" not in text
+    assert "Deploy on Vercel" not in text
+    for real in ("NEXT_PUBLIC_API_URL", "check:api", "/agent"):
+        assert real in text, f"the front-end README does not mention {real}"
