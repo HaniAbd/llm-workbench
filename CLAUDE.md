@@ -35,7 +35,7 @@ There is no real API key anywhere — swapping to a hosted provider is a matter 
 | --- | --- | --- |
 | [scripts/](scripts/) | Node ESM, Vercel AI SDK (`ai` + `@ai-sdk/openai`) | Numbered standalone experiments, run directly with `node` |
 | [api/](api/) | FastAPI + `openai` Python SDK | `POST /chat` streams SSE; `POST /classify` returns a schema-constrained object; `POST /ask` answers from the repo's own docs; `POST /agent` runs a gated tool-calling loop |
-| [web/](web/) | Next.js 16, React 19, Tailwind v4 | `/` chat, `/classify` classifier, `/ask` doc search, all with a trace panel |
+| [web/](web/) | Next.js 16, React 19, Tailwind v4 | `/` chat, `/classify` classifier, `/ask` doc search, `/agent` the gated agent, all with a trace panel |
 
 They are independent: no shared package, no build step linking them. The only contracts between them are the root `.env` and the SSE protocol below.
 
@@ -166,6 +166,16 @@ Three answers: **approved** runs the tool; **rejected** becomes an `ACTION_REJEC
 Measured: with the shipped prompt the gate fires only on explicit re-index requests, but an **earlier prompt revision had the model propose a write while answering a pure lookup**. Whether it does that is prompt-sensitive, which is exactly why the gate is not prompt-based. It also consistently fails the other way — it ignores a re-index request naming `CLAUDE.md` and always names `api/README.md` whatever the question says.
 
 Transport is **inline, deliberately**: a caller only ever sees its own call, so there is no trace store to query and no id to guess. The trade is that every response carries the full rendered prompt — fine locally, the first thing to revisit if this leaves localhost. A `502` carries a trace; a `422` does not, because nothing was called.
+
+#### The agent page
+
+`web/app/agent/page.tsx` follows a *resource*, not a response — the only page that does. It keeps up with a run via the blocking `GET /agent/{id}?wait=25`, which returns the moment the run wants someone or finishes, so **the pause arrives without polling and without a refresh**; the tab title changes while a decision is outstanding so it reaches a background tab too. The one case needing a timer is a run that is *already* paused, since `wait` does not block then — the page sleeps until the approval would lapse and looks once more, and a decision aborts that sleep.
+
+**Steps are not re-rendered on the page.** `TraceBody` already lays out a run's events including the agent kinds, so the page ends at a `TraceTrigger` rather than growing a second timeline that would drift from it.
+
+`ApprovalCard` is the decision surface: the tool, the validated arguments, and the server-declared `effect`, with a countdown anchored on `expires_in_s` at arrival (immune to clock skew) and reset by remounting on `requested_at`. **Reject is a bordered button, never red** — a refusal is an ordinary outcome the run continues past, and the page records it as a decision rather than an error. Endings are distinguished: `answered` shows the answer, `approval_expired` is `info` (the gate working), the four bounds are `warn` naming which, and a `failed` run is `danger`. For any non-`answered` ending the page shows only the notice — `result.answer` is the loop's own sentence there, not the agent's words.
+
+**Known gap:** a paused run exposes only `question` and `pending`; `result` and `trace` stay null until it finishes, so read-only steps taken *before* a pause are not visible at decision time. The page says so rather than implying you are seeing everything.
 
 #### Prompt store
 

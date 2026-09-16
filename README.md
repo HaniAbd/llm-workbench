@@ -64,7 +64,7 @@ curl -s http://localhost:8000/classify -H 'content-type: application/json' \
 | Directory | Stack | What it is |
 | --- | --- | --- |
 | [`api/`](api/) | FastAPI, `openai` SDK | The service. `POST /chat` streams SSE; `POST /classify` returns a schema-constrained object; `POST /agent` runs a tool-calling loop over the rest. Also the prompt store, tracing seam, eval suite and tests. **[Full documentation](api/README.md)** |
-| [`web/`](web/) | Next.js 16, React 19, Tailwind v4 | Chat page, classifier page, and a trace panel for any call |
+| [`web/`](web/) | Next.js 16, React 19, Tailwind v4 | Chat, classifier, doc-search and agent pages, with a trace panel for any call |
 | [`scripts/`](scripts/) | Node, Vercel AI SDK | Numbered standalone experiments, read as much as run: first call, temperature, roles, streaming, error handling |
 | [`evals/`](api/evals/) | — | 34 scored cases, run history, pinned reference |
 | [`docker-compose.yml`](docker-compose.yml) | Postgres 17 + pgvector | The document index, on port 5433 |
@@ -120,6 +120,9 @@ Most of the loop is what happens when things go wrong. It is bounded three ways 
 `llama3.2` handles this badly, and the [measured failures](api/README.md#what-the-model-actually-does) are the point: it refuses unanswerable questions well (7/7), but drops half of a two-part request 3 times in 5 — and then fabricates the half it skipped.
 
 ### A person decides before anything changes
+
+The `/agent` page is where this is meant to be used: ask for something, watch the run, and when it wants to act, decide. It follows the run with a blocking `GET /agent/{id}?wait=`, so the pause arrives on its own rather than being polled for — and the tab title changes, so it reaches you from a background tab too.
+
 
 One tool actually acts: `reindex_document` re-indexes a single document. Before it runs, the loop **stops and waits for a person** — which is why a run is a resource rather than a response, since an action nobody can see is an action nobody can approve.
 

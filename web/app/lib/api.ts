@@ -30,6 +30,23 @@ export type Classification = Required<
   Omit<Schemas["ClassificationResponse"], "trace">
 > & { trace: Trace };
 
+/** An agent run, which unlike every other call here is a resource that
+ *  outlives the request that started it. `result` and `trace` are null until
+ *  it finishes - a paused run exposes only its question and what it wants to
+ *  do next. */
+export type Run = Required<Omit<Schemas["RunView"], "trace" | "result">> & {
+  trace: Trace | null;
+  result: RunResult | null;
+};
+export type RunStatus = Run["status"];
+export type RunResult = Schemas["AgentRun"];
+export type RunStep = Schemas["AgentStep"];
+export type StopReason = RunResult["stop_reason"];
+/** The action a run is paused on. `effect` is declared on the server's tool
+ *  table rather than written by the model, which is what makes it worth
+ *  showing to someone deciding. */
+export type PendingAction = Schemas["PendingApprovalView"];
+
 /** Reads an SSE body, handing each complete frame to `onEvent`.
  *  Frames are split across reads, so only what is terminated by a blank line
  *  is parsed. */

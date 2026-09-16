@@ -8,6 +8,7 @@ const LINKS = [
   { href: "/", label: "Chat" },
   { href: "/classify", label: "Classify" },
   { href: "/ask", label: "Ask the docs" },
+  { href: "/agent", label: "Agent" },
 ];
 
 export default function Nav() {

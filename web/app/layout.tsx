@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "llm-workbench",
-  description: "Chat, classification and retrieval against a local model, with the trace behind every call.",
+  description: "Chat, classification, retrieval and a gated agent against a local model, with the trace behind every call.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
