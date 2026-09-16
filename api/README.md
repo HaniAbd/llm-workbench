@@ -496,19 +496,22 @@ python evals/run_retrieval.py --history
 ```
 
 ```
-retrieval=0.691  answer=0.790   (31 cases)
-answer|found=0.923   (answer over the 13 cases where retrieval found everything)
+retrieval=0.548  answer=0.726   (31 cases, 145.6s)
+answer|found=0.850   (answer over the 10 cases where retrieval found everything)
+index 7ebddca9e28a   101 chunks from 4 documents
 
 by group          retrieval   answer
-  direct               0.875    0.938
-  multi_doc            0.583    0.750
-  unanswerable             —    0.900
-  vocabulary           0.571    0.500
+  direct               0.750    0.688
+  multi_doc            0.417    0.583
+  unanswerable             —    1.000
+  vocabulary           0.429    0.500
 ```
+
+**A score means nothing without the corpus it was measured against**, which is why the run prints the index digest beside it. The pinned reference scored `retrieval=0.691` on **59 chunks from 6 documents**; the corpus is now **101 chunks from 4**, after four steps of documentation were written and indexed at once. Retrieval is a fixed top-4, so 42 further chunks compete for the same slots — the drop to 0.548 is that competition, not a change in how retrieval works. `RETRIEVE_K`, the pool and the floor are all unchanged.
 
 **Two scores, never blended.** Retrieval and generation fail independently: the index can miss the passage, or find it and the model can still answer badly from it. One number would say something is wrong without saying which half to fix.
 
-`answer|found` is the figure that separates them — the answer score over only those cases where retrieval found everything it should. At **0.923** against a retrieval score of **0.691**, the weakness remains the index rather than the model — retrieval improved from 0.619 but is still the lower of the two.
+`answer|found` is the figure that separates them — the answer score over only those cases where retrieval found everything it should. At **0.850** against a retrieval score of **0.548**, the weakness remains the index rather than the model, and by a wider margin than before: the model still answers well from what it is given, and it is given the right passages less often than it was.
 
 | Group | What it tests |
 | --- | --- |

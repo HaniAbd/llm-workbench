@@ -160,7 +160,7 @@
         "passages": [
           {
             "source": "api/README.md",
-            "contains": "prunes documents no longer on disk"
+            "contains": "prunes documents no longer in the corpus"
           }
         ],
         "must_contain": [
@@ -171,6 +171,7 @@
           ],
           [
             "full",
+            "in the corpus",
             "no longer on disk",
             "not on disk"
           ]

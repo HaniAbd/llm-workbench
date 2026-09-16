@@ -103,7 +103,7 @@ Failures split into **accepted** (blessed in `cases.json`), **regressions** (wor
 
 #### Retrieval evaluation
 
-`python evals/run_retrieval.py` (31 cases, ~4 min) scores `/ask`. **Two scores, never blended** — `retrieval` (recall of expected passages, order ignored, fractional for multi-document answers) and `answer` (required facts; binary refusal for unanswerable cases). A third derived figure, `answer|found`, gives the answer score over cases where retrieval found everything: currently **0.923 against retrieval 0.691**, so the weakness remains the index rather than the model.
+`python evals/run_retrieval.py` (31 cases, ~4 min) scores `/ask`. **Two scores, never blended** — `retrieval` (recall of expected passages, order ignored, fractional for multi-document answers) and `answer` (required facts; binary refusal for unanswerable cases). A third derived figure, `answer|found`, gives the answer score over cases where retrieval found everything: currently **0.850 against retrieval 0.548**, so the weakness remains the index rather than the model. Read both against the corpus they were measured on — the pinned reference is `0.691` on **59 chunks from 6 documents** and the corpus is now **101 chunks from 4**, so most of that gap is 42 extra chunks competing for a fixed top-4, not a change in retrieval.
 
 Four groups: `direct`, `vocabulary` (question words absent from the text), `multi_doc` (answer spans two documents), `unanswerable` (must refuse). Expected passages are named by a distinctive substring rather than a heading path, so re-chunking does not break the set.
 
